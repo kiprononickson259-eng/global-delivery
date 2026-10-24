@@ -38,6 +38,9 @@
     .route { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; font-weight: 700; flex-wrap: wrap; }
     .route .arrow { color: var(--accent); font-size: 1.3rem; }
     .meta { color: var(--muted); font-size: .92rem; }
+    .qr-row { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+    .qr img { width: 130px; height: 130px; image-rendering: pixelated; display: block; }
+    .qr-note { font-size: .85rem; color: var(--muted); }
     .barcode { display: block; width: min(100%, 360px); height: 90px; margin: 10px 0 4px; }
 
     /* Progress steps */
@@ -83,6 +86,7 @@
     .hidden { display: none; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
@@ -153,6 +157,19 @@ function progress(status) {
     </div>`).join('')}</div>`;
 }
 
+function renderQRs(root) {
+  root.querySelectorAll('[data-qr]').forEach((el) => {
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(el.dataset.qr);
+      qr.make();
+      el.innerHTML = qr.createImgTag(6, 2, 'QR code to track this parcel');
+    } catch (e) {
+      el.textContent = 'QR code unavailable';
+    }
+  });
+}
+
 function renderBarcodes(root) {
   root.querySelectorAll('svg[data-barcode]').forEach((svg) => {
     try {
@@ -184,6 +201,10 @@ async function track() {
           ${d.description ? '<br>Contents: ' + esc(d.description) : ''}
           ${d.weight_kg ? '<br>Weight: ' + esc(d.weight_kg) + ' kg' : ''}</p>
         <svg class="barcode" data-barcode="${esc(d.tracking_number)}" aria-label="Barcode for ${esc(d.tracking_number)}"></svg>
+        <div class="qr-row">
+          <div class="qr" data-qr="${esc(location.origin + '/?code=' + encodeURIComponent(d.tracking_number))}"></div>
+          <div class="qr-note">Scan with your phone camera to open this tracking page.</div>
+        </div>
       </div>
       <div class="card">
         <h3 class="timeline-title">Tracking history</h3>
@@ -200,6 +221,7 @@ async function track() {
         <button class="alt" onclick="downloadImage()">Download image</button>
       </div>`;
     renderBarcodes($('result'));
+    renderQRs($('result'));
     $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     $('result').innerHTML = '<div class="card"><p class="error">Could not reach the server. Please try again.</p></div>';

@@ -22,6 +22,11 @@
     .error { color: #c62828; }
     .ok { color: #2e7d32; }
     .code { font-size: 1.3rem; font-weight: 700; letter-spacing: 1px; color: var(--brand); }
+    @page { margin: 0; }
+    .qr { text-align: center; margin: 10px 0 2px; }
+    .qr img { width: 170px; height: 170px; image-rendering: pixelated; display: inline-block; }
+    .qr-note { text-align: center; font-size: .85rem; color: #667; }
+    .label-name { text-align: center; font-weight: 700; color: var(--brand); margin-bottom: 4px; }
     .barcode { display: block; width: min(100%, 420px); height: 100px; margin: 8px auto; }
     .barcode-label { text-align: center; font-weight: 700; letter-spacing: 1px; }
     @media print {
@@ -38,7 +43,9 @@
     .login-box { max-width: 380px; margin: 40px auto; }
     .login-box a { color: var(--brand); font-size: .9rem; }
   </style>
+  <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 </head>
 <body>
   <header>
@@ -129,6 +136,40 @@ function renderBarcodes(root = document) {
       svg.remove();
     }
   });
+}
+
+function renderQRs(root) {
+  root.querySelectorAll('[data-qr]').forEach((el) => {
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(el.dataset.qr);
+      qr.make();
+      el.innerHTML = qr.createImgTag(6, 2, 'QR code to track this parcel');
+    } catch (e) {
+      el.textContent = 'QR code unavailable';
+    }
+  });
+}
+
+function labelHtml(code, heading) {
+  const link = location.origin + '/?code=' + encodeURIComponent(code);
+  const name = (window.SITE && window.SITE.name) || 'Global Delivery Services';
+  return `<div id="barcodePrint" class="card">
+    ${heading ? `<p class="ok">${esc(heading)}</p>` : ''}
+    <div class="label-name">${esc(name)}</div>
+    <div class="code" style="text-align:center">${esc(code)}</div>
+    <div class="qr" data-qr="${esc(link)}"></div>
+    <div class="qr-note">Scan to track this parcel</div>
+    <svg class="barcode" data-barcode="${esc(code)}" aria-label="Barcode for ${esc(code)}"></svg>
+    <button type="button" onclick="window.print()">Print label</button>
+  </div>`;
+}
+
+function showLabel(code) {
+  $('created').innerHTML = labelHtml(code, '');
+  renderBarcodes($('created'));
+  renderQRs($('created'));
+  $('created').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function printBarcode() { window.print(); }
@@ -247,6 +288,7 @@ function renderList(rows) {
       <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}<br>
       ${esc(p.origin)} → ${esc(p.destination)}<br>
       <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}</small><br>
+      <button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>
       ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
     </div>`).join('') : '<small>No parcels yet</small>';
 }
@@ -269,8 +311,9 @@ async function createParcel() {
     description: $('desc').value, weight_kg: $('weight').value
   });
   if (r.ok) {
-    $('created').innerHTML = `<div id="barcodePrint" class="card"><p class="ok">Parcel created. Tracking number:</p><div class="code">${esc(r.data.tracking_number)}</div><svg class="barcode" data-barcode="${esc(r.data.tracking_number)}" aria-label="Barcode for tracking number ${esc(r.data.tracking_number)}"></svg><div class="barcode-label">${esc(r.data.tracking_number)}</div><button type="button" onclick="printBarcode()">Print barcode</button></div>`;
+    $('created').innerHTML = labelHtml(r.data.tracking_number, 'Parcel created. Print this label for the parcel:');
     renderBarcodes($('created'));
+    renderQRs($('created'));
     $('ucode').value = r.data.tracking_number;
     ['tnum','sname','sphone','rname','rphone','origin','dest','desc','weight'].forEach(id => $(id).value = '');
     loadParcels();
