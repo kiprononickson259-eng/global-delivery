@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Staff portal – Global Delivery Services</title>
+  <style>
+    :root { --brand: #0d3b66; --accent: #f26b21; --bg: #f4f6f8; --line: #dde2e7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: #1b1f23; }
+    header { background: var(--brand); color: #fff; padding: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    header h1 { margin: 0; font-size: 1.15rem; }
+    header span { color: var(--accent); }
+    header small { display: block; opacity: .8; font-weight: 400; font-size: .8rem; }
+    header button { width: auto; background: transparent; border: 1px solid rgba(255,255,255,.6); padding: 6px 14px; margin: 0; }
+    main { max-width: 600px; margin: 0 auto; padding: 16px; }
+    input, select, textarea, button { font: inherit; padding: 11px; width: 100%; margin: 4px 0; border-radius: 6px; border: 1px solid var(--line); }
+    button { background: var(--accent); color: #fff; border: 0; cursor: pointer; font-weight: 600; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 12px 0; }
+    .row { display: flex; gap: 8px; }
+    .error { color: #c62828; }
+    .ok { color: #2e7d32; }
+    .code { font-size: 1.3rem; font-weight: 700; letter-spacing: 1px; color: var(--brand); }
+    .barcode { display: block; width: min(100%, 420px); height: 100px; margin: 8px auto; }
+    .barcode-label { text-align: center; font-weight: 700; letter-spacing: 1px; }
+    @media print {
+      body * { visibility: hidden; }
+      #barcodePrint, #barcodePrint * { visibility: visible; }
+      #barcodePrint { position: absolute; inset: 0; width: 100%; padding: 24px; }
+      #barcodePrint button { display: none; }
+    }
+    .parcel { padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; font-size: .92rem; }
+    .parcel:last-child { border: 0; }
+    .hidden { display: none; }
+    .del { width: auto; background: #c62828; padding: 4px 12px; font-size: .8rem; margin-top: 6px; }
+    h3 { margin: 16px 0 4px; }
+    .login-box { max-width: 380px; margin: 40px auto; }
+    .login-box a { color: var(--brand); font-size: .9rem; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Global <span>Delivery</span> Services <small>Staff portal</small></h1>
+    <div><small id="who" class="hidden"></small> <button id="lockBtn" class="hidden" onclick="lock()">Sign out</button></div>
+  </header>
+
+  <main>
+    <!-- LOGIN -->
+    <div id="login" class="card login-box">
+      <h3 style="margin-top:0">Staff sign in</h3>
+      <input id="user" placeholder="Username" autocomplete="username" />
+      <input id="pass" type="password" placeholder="Password" autocomplete="current-password" />
+      <button onclick="unlock()">Sign in</button>
+      <div id="loginMsg"></div>
+      <p><a href="/">← Customer tracking page</a></p>
+    </div>
+
+    <!-- STAFF PANEL -->
+    <div id="panel" class="hidden">
+      <h3>Register new parcel</h3>
+      <div class="card">
+        <input id="tnum" placeholder="Tracking number (leave empty to auto-generate)" />
+        <div class="row"><input id="sname" placeholder="Sender name" /><input id="sphone" placeholder="Sender phone" /></div>
+        <div class="row"><input id="rname" placeholder="Receiver name" /><input id="rphone" placeholder="Receiver phone" /></div>
+        <div class="row"><input id="origin" placeholder="From (town)" /><input id="dest" placeholder="To (town)" /></div>
+        <input id="desc" placeholder="Contents (e.g. Documents, clothes)" />
+        <input id="weight" type="number" step="0.1" placeholder="Weight in kg" />
+        <button onclick="createParcel()">Create parcel</button>
+        <div id="created"></div>
+      </div>
+
+      <h3>Add status update</h3>
+      <div class="card">
+        <input id="ucode" placeholder="Tracking number" />
+        <select id="status"></select>
+        <input id="location" placeholder="Location (e.g. Nairobi hub)" />
+        <input id="note" placeholder="Note (optional)" />
+        <button onclick="addEvent()">Add update</button>
+        <div id="updated"></div>
+      </div>
+
+      <h3>Recent parcels</h3>
+      <div class="card">
+        <input id="search" placeholder="Search by number or name" oninput="loadParcels()" />
+        <div id="list"></div>
+      </div>
+
+      <h3>My account</h3>
+      <div class="card">
+        <input id="curpw" type="password" placeholder="Current password" />
+        <input id="newpw" type="password" placeholder="New password (8+ characters)" />
+        <button onclick="changePassword()">Change password</button>
+        <div id="pwmsg"></div>
+      </div>
+
+      <div id="adminOnly" class="hidden">
+        <h3>Staff accounts</h3>
+        <div class="card">
+          <input id="nusername" placeholder="Username (e.g. mary)" />
+          <input id="nfull" placeholder="Full name" />
+          <input id="npass" type="password" placeholder="Temporary password (8+ characters)" />
+          <select id="nrole"><option value="staff">Staff</option><option value="admin">Admin</option></select>
+          <button onclick="addUser()">Create account</button>
+          <div id="usermsg"></div>
+          <div id="users"></div>
+        </div>
+        <h3>Activity log</h3>
+        <div class="card"><div id="activity"></div></div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let token = sessionStorage.getItem('gds_token') || '';
+let me = null;
+
+function renderBarcodes(root = document) {
+  root.querySelectorAll('svg[data-barcode]').forEach((svg) => {
+    try {
+      JsBarcode(svg, svg.dataset.barcode, {
+        format: 'CODE128', displayValue: true, font: 'monospace', height: 64, margin: 8
+      });
+    } catch (error) {
+      svg.insertAdjacentHTML('afterend', '<p class="error">Could not generate barcode.</p>');
+      svg.remove();
+    }
+  });
+}
+
+function printBarcode() { window.print(); }
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json();
+  if (res.status === 401 && me) { lock('Your session ended. Please sign in again.'); }
+  return { ok: res.ok, data };
+}
+
+async function showPanel() {
+  $('login').classList.add('hidden');
+  $('panel').classList.remove('hidden');
+  $('lockBtn').classList.remove('hidden');
+  $('who').textContent = me.full_name + ' (' + me.role + ')';
+  $('who').classList.remove('hidden');
+  const statuses = await (await fetch('/api/statuses')).json();
+  $('status').innerHTML = statuses.map(s => `<option>${esc(s)}</option>`).join('');
+  $('adminOnly').classList.toggle('hidden', me.role !== 'admin');
+  await loadParcels();
+  if (me.role === 'admin') { loadUsers(); loadActivity(); }
+}
+
+async function unlock() {
+  const r = await fetch('/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: $('user').value, password: $('pass').value })
+  });
+  const d = await r.json();
+  if (!r.ok) { $('loginMsg').innerHTML = `<p class="error">${esc(d.error)}</p>`; return; }
+  token = d.token; me = d.user;
+  try { sessionStorage.setItem('gds_token', token); } catch (e) {}
+  $('pass').value = '';
+  showPanel();
+}
+$('pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') unlock(); });
+
+function lock(msg) {
+  token = ''; me = null;
+  try { sessionStorage.removeItem('gds_token'); } catch (e) {}
+  $('panel').classList.add('hidden');
+  $('lockBtn').classList.add('hidden');
+  $('who').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('loginMsg').innerHTML = msg ? `<p class="error">${esc(msg)}</p>` : '';
+}
+
+// Keep the person signed in if they refresh the page
+(async function resume() {
+  if (!token) return;
+  const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } });
+  if (res.ok) { me = await res.json(); showPanel(); } else { lock(); }
+})();
+
+async function changePassword() {
+  const r = await api('POST', '/api/me/password', { current: $('curpw').value, next: $('newpw').value });
+  $('pwmsg').innerHTML = r.ok ? '<p class="ok">Password changed</p>' : `<p class="error">${esc(r.data.error)}</p>`;
+  if (r.ok) { $('curpw').value = ''; $('newpw').value = ''; }
+}
+
+async function loadUsers() {
+  const r = await api('GET', '/api/users');
+  if (!r.ok) return;
+  $('users').innerHTML = r.data.map(u => `
+    <div class="parcel" style="cursor:default">
+      <b>${esc(u.username)}</b> · ${esc(u.full_name)} · ${esc(u.role)} · ${Number(u.active) ? 'active' : '<span class="error">deactivated</span>'}<br>
+      <button class="del" style="background:var(--brand)" onclick="resetUserPassword('${esc(u.username)}')">Reset password</button>
+      <button class="del" onclick="toggleUser('${esc(u.username)}', ${Number(u.active) ? 'false' : 'true'})">${Number(u.active) ? 'Deactivate' : 'Reactivate'}</button>
+    </div>`).join('');
+}
+
+async function addUser() {
+  const r = await api('POST', '/api/users', {
+    username: $('nusername').value, full_name: $('nfull').value, password: $('npass').value, role: $('nrole').value
+  });
+  $('usermsg').innerHTML = r.ok ? '<p class="ok">Account created</p>' : `<p class="error">${esc(r.data.error)}</p>`;
+  if (r.ok) { ['nusername', 'nfull', 'npass'].forEach(id => $(id).value = ''); loadUsers(); loadActivity(); }
+}
+
+async function toggleUser(username, active) {
+  const r = await api('PATCH', '/api/users/' + encodeURIComponent(username), { active });
+  if (!r.ok) alert(r.data.error); else { loadUsers(); loadActivity(); }
+}
+
+async function resetUserPassword(username) {
+  const pw = prompt('New temporary password for ' + username + ' (8+ characters):');
+  if (!pw) return;
+  const r = await api('PATCH', '/api/users/' + encodeURIComponent(username), { password: pw });
+  alert(r.ok ? 'Password reset' : r.data.error);
+}
+
+async function loadActivity() {
+  const r = await api('GET', '/api/activity');
+  if (!r.ok) return;
+  $('activity').innerHTML = r.data.length ? r.data.map(a => `
+    <div class="parcel" style="cursor:default">
+      <b>${esc(a.action)}</b>${a.detail ? ' · ' + esc(a.detail) : ''}<br>
+      <small>${esc(a.username)} · ${esc(a.created_at)} UTC</small>
+    </div>`).join('') : '<small>No activity yet</small>';
+}
+
+async function loadParcels() {
+  const r = await api('GET', '/api/parcels?q=' + encodeURIComponent($('search').value));
+  if (r.ok) renderList(r.data);
+  if (me && me.role === 'admin') loadActivity();
+}
+
+function renderList(rows) {
+  $('list').innerHTML = rows.length ? rows.map(p => `
+    <div class="parcel" onclick="pick('${esc(p.tracking_number)}')">
+      <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}<br>
+      ${esc(p.origin)} → ${esc(p.destination)}<br>
+      <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}</small><br>
+      ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
+    </div>`).join('') : '<small>No parcels yet</small>';
+}
+
+function pick(code) { $('ucode').value = code; window.scrollTo({ top: 0, behavior: 'smooth' }); }
+
+async function removeParcel(code) {
+  if (!confirm('Delete ' + code + ' and all its history? This cannot be undone.')) return;
+  const r = await api('DELETE', '/api/parcels/' + encodeURIComponent(code));
+  if (!r.ok) { alert(r.data.error); return; }
+  loadParcels();
+}
+
+async function createParcel() {
+  const r = await api('POST', '/api/parcels', {
+    tracking_number: $('tnum').value,
+    sender_name: $('sname').value, sender_phone: $('sphone').value,
+    receiver_name: $('rname').value, receiver_phone: $('rphone').value,
+    origin: $('origin').value, destination: $('dest').value,
+    description: $('desc').value, weight_kg: $('weight').value
+  });
+  if (r.ok) {
+    $('created').innerHTML = `<div id="barcodePrint" class="card"><p class="ok">Parcel created. Tracking number:</p><div class="code">${esc(r.data.tracking_number)}</div><svg class="barcode" data-barcode="${esc(r.data.tracking_number)}" aria-label="Barcode for tracking number ${esc(r.data.tracking_number)}"></svg><div class="barcode-label">${esc(r.data.tracking_number)}</div><button type="button" onclick="printBarcode()">Print barcode</button></div>`;
+    renderBarcodes($('created'));
+    $('ucode').value = r.data.tracking_number;
+    ['tnum','sname','sphone','rname','rphone','origin','dest','desc','weight'].forEach(id => $(id).value = '');
+    loadParcels();
+  } else {
+    $('created').innerHTML = `<p class="error">${esc(r.data.error)}</p>`;
+  }
+}
+
+async function addEvent() {
+  const r = await api('POST', '/api/parcels/' + encodeURIComponent($('ucode').value.trim()) + '/events', {
+    status: $('status').value, location: $('location').value, note: $('note').value
+  });
+  $('updated').innerHTML = r.ok ? '<p class="ok">Updated</p>' : `<p class="error">${esc(r.data.error)}</p>`;
+  if (r.ok) loadParcels();
+}
+</script>
+</body>
+</html>

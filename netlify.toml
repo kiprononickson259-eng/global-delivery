@@ -1,0 +1,21 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+  command = "echo Building Functions"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["express", "pg"]
+
+# All /api/... requests go to the function
+[[redirects]]
+  force = true
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Staff page address
+[[redirects]]
+  from = "/staff"
+  to = "/staff.html"
+  status = 200
