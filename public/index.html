@@ -211,6 +211,7 @@ async function track() {
         ${d.events.map(e => `
           <div class="event">
             <b>${esc(e.status)}</b>${e.location ? ' – ' + esc(e.location) : ''}<br>
+            ${e.transport ? 'Via: ' + esc(e.transport) + '<br>' : ''}
             ${e.note ? esc(e.note) + '<br>' : ''}
             <small>${fmt(e.created_at)}</small>
           </div>`).join('')}

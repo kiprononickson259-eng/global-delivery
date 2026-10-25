@@ -73,6 +73,7 @@
         <div class="row"><input id="rname" placeholder="Receiver name" /><input id="rphone" placeholder="Receiver phone" /></div>
         <div class="row"><input id="origin" placeholder="From (town)" /><input id="dest" placeholder="To (town)" /></div>
         <input id="desc" placeholder="Contents (e.g. Documents, clothes)" />
+        <input id="transport" placeholder="Flight or vehicle used (optional, e.g. Flight KQ 100 or Truck KDA 123X)" />
         <input id="weight" type="number" step="0.1" placeholder="Weight in kg" />
         <button onclick="createParcel()">Create parcel</button>
         <div id="created"></div>
@@ -83,6 +84,7 @@
         <input id="ucode" placeholder="Tracking number" />
         <select id="status"></select>
         <input id="location" placeholder="Location (e.g. Nairobi hub)" />
+        <input id="utransport" placeholder="Flight or vehicle used (e.g. Flight KQ 100 or Truck KDA 123X)" />
         <input id="note" placeholder="Note (optional)" />
         <button onclick="addEvent()">Add update</button>
         <div id="updated"></div>
@@ -287,7 +289,7 @@ function renderList(rows) {
     <div class="parcel" onclick="pick('${esc(p.tracking_number)}')">
       <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}<br>
       ${esc(p.origin)} → ${esc(p.destination)}<br>
-      <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}</small><br>
+      <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}${p.created_by ? ' · registered by ' + esc(p.created_by) : ''}</small><br>
       <button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>
       ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
     </div>`).join('') : '<small>No parcels yet</small>';
@@ -308,14 +310,14 @@ async function createParcel() {
     sender_name: $('sname').value, sender_phone: $('sphone').value,
     receiver_name: $('rname').value, receiver_phone: $('rphone').value,
     origin: $('origin').value, destination: $('dest').value,
-    description: $('desc').value, weight_kg: $('weight').value
+    description: $('desc').value, weight_kg: $('weight').value, transport: $('transport').value
   });
   if (r.ok) {
     $('created').innerHTML = labelHtml(r.data.tracking_number, 'Parcel created. Print this label for the parcel:');
     renderBarcodes($('created'));
     renderQRs($('created'));
     $('ucode').value = r.data.tracking_number;
-    ['tnum','sname','sphone','rname','rphone','origin','dest','desc','weight'].forEach(id => $(id).value = '');
+    ['tnum','sname','sphone','rname','rphone','origin','dest','desc','weight','transport'].forEach(id => $(id).value = '');
     loadParcels();
   } else {
     $('created').innerHTML = `<p class="error">${esc(r.data.error)}</p>`;
@@ -324,7 +326,7 @@ async function createParcel() {
 
 async function addEvent() {
   const r = await api('POST', '/api/parcels/' + encodeURIComponent($('ucode').value.trim()) + '/events', {
-    status: $('status').value, location: $('location').value, note: $('note').value
+    status: $('status').value, location: $('location').value, transport: $('utransport').value, note: $('note').value
   });
   $('updated').innerHTML = r.ok ? '<p class="ok">Updated</p>' : `<p class="error">${esc(r.data.error)}</p>`;
   if (r.ok) loadParcels();
