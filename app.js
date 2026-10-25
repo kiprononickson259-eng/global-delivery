@@ -238,6 +238,11 @@ app.get('/api/activity', auth, adminOnly, wrap(async (req, res) =>
 
 /* ---------- Staff: parcels ---------- */
 // Staff cannot see or change parcels that an administrator registered. Admins see everything.
+// Only an admin, or the staff member who registered the parcel, may change its status or print its label
+const NOT_YOURS = 'Only an admin or the staff member who registered this parcel can change it';
+function canEdit(user, parcel) {
+  return user.role === 'admin' || parcel.created_by === user.username;
+}
 function hiddenFromStaff(user) {
   return user.role === 'admin' ? '' : " AND (owner_role IS NULL OR owner_role <> 'admin')";
 }
@@ -270,8 +275,9 @@ app.post('/api/parcels', auth, wrap(async (req, res) => {
 
 app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
   const code = req.params.code.trim().toUpperCase();
-  const parcel = await db.get('SELECT id FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
+  const parcel = await db.get('SELECT id, created_by FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
   if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
+  if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
   const { status, location, note } = req.body;
   const transport = String(req.body.transport || '').trim().slice(0, 120) || null;
   if (!STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status' });
@@ -284,11 +290,20 @@ app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
 
 app.get('/api/parcels', auth, wrap(async (req, res) => {
   const q = `%${(req.query.q || '').trim()}%`;
-  res.json(await db.all(
+  const rows = await db.all(
     `SELECT tracking_number, sender_name, receiver_name, receiver_phone, origin, destination, status, created_by, created_at
      FROM parcels
      WHERE (LOWER(tracking_number) LIKE LOWER(?) OR LOWER(receiver_name) LIKE LOWER(?) OR LOWER(sender_name) LIKE LOWER(?))${hiddenFromStaff(req.user)}
-     ORDER BY id DESC LIMIT 50`, [q, q, q]));
+     ORDER BY id DESC LIMIT 50`, [q, q, q]);
+  res.json(rows.map(p => ({ ...p, can_edit: canEdit(req.user, p) })));
+}));
+
+app.get('/api/parcels/:code/label', auth, wrap(async (req, res) => {
+  const parcel = await db.get('SELECT tracking_number, created_by FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user),
+    [req.params.code.trim().toUpperCase()]);
+  if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
+  if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
+  res.json({ tracking_number: parcel.tracking_number });
 }));
 
 app.delete('/api/parcels/:code', auth, adminOnly, wrap(async (req, res) => {
