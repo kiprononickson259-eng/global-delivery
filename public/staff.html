@@ -167,8 +167,10 @@ function labelHtml(code, heading) {
   </div>`;
 }
 
-function showLabel(code) {
-  $('created').innerHTML = labelHtml(code, '');
+async function showLabel(code) {
+  const r = await api('GET', '/api/parcels/' + encodeURIComponent(code) + '/label');
+  if (!r.ok) { $('created').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  $('created').innerHTML = labelHtml(r.data.tracking_number, '');
   renderBarcodes($('created'));
   renderQRs($('created'));
   $('created').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -286,11 +288,11 @@ async function loadParcels() {
 
 function renderList(rows) {
   $('list').innerHTML = rows.length ? rows.map(p => `
-    <div class="parcel" onclick="pick('${esc(p.tracking_number)}')">
+    <div class="parcel" ${p.can_edit ? `onclick="pick('${esc(p.tracking_number)}')"` : ''}>
       <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}<br>
       ${esc(p.origin)} → ${esc(p.destination)}<br>
       <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}${p.created_by ? ' · registered by ' + esc(p.created_by) : ''}</small><br>
-      <button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>
+      ${p.can_edit ? `<button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>` : '<small>View only (registered by someone else)</small>'}
       ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
     </div>`).join('') : '<small>No parcels yet</small>';
 }
