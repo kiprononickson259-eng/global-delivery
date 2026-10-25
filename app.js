@@ -154,7 +154,7 @@ app.get('/api/track/:code', rateLimit(60, 60 * 1000), wrap(async (req, res) => {
   );
   if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
   const events = await db.all(
-    'SELECT status, location, note, created_at FROM events WHERE parcel_id = ? ORDER BY id DESC', [parcel.id]
+    'SELECT status, location, transport, note, created_at FROM events WHERE parcel_id = ? ORDER BY id DESC', [parcel.id]
   );
   res.json({
     tracking_number: parcel.tracking_number,
@@ -237,8 +237,14 @@ app.get('/api/activity', auth, adminOnly, wrap(async (req, res) =>
   res.json(await db.all('SELECT username, action, detail, created_at FROM activity_log ORDER BY id DESC LIMIT 100'))));
 
 /* ---------- Staff: parcels ---------- */
+// Staff cannot see or change parcels that an administrator registered. Admins see everything.
+function hiddenFromStaff(user) {
+  return user.role === 'admin' ? '' : " AND (owner_role IS NULL OR owner_role <> 'admin')";
+}
+
 app.post('/api/parcels', auth, wrap(async (req, res) => {
   const { tracking_number, sender_name, sender_phone, receiver_name, receiver_phone, origin, destination, description, weight_kg } = req.body;
+  const transport = String(req.body.transport || '').trim().slice(0, 120) || null;
   if (!sender_name || !receiver_name || !origin || !destination) {
     return res.status(400).json({ error: 'Sender, receiver, origin and destination are required' });
   }
@@ -251,25 +257,26 @@ app.post('/api/parcels', auth, wrap(async (req, res) => {
     code = makeCode();
   }
   const info = await db.run(
-    `INSERT INTO parcels (tracking_number, sender_name, sender_phone, receiver_name, receiver_phone, origin, destination, description, weight_kg, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO parcels (tracking_number, sender_name, sender_phone, receiver_name, receiver_phone, origin, destination, description, weight_kg, created_by, owner_role)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [code, sender_name, sender_phone || null, receiver_name, receiver_phone || null, origin, destination,
-      description || null, weight_kg ? Number(weight_kg) : null, req.user.username]
+      description || null, weight_kg ? Number(weight_kg) : null, req.user.username, req.user.role]
   );
-  await db.run('INSERT INTO events (parcel_id, status, location, created_by) VALUES (?,?,?,?)',
-    [info.id, 'Registered', origin, req.user.username]);
+  await db.run('INSERT INTO events (parcel_id, status, location, transport, created_by) VALUES (?,?,?,?,?)',
+    [info.id, 'Registered', origin, transport, req.user.username]);
   await log(req.user.username, 'Registered parcel', code);
   res.status(201).json({ tracking_number: code });
 }));
 
 app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
   const code = req.params.code.trim().toUpperCase();
-  const parcel = await db.get('SELECT id FROM parcels WHERE tracking_number = ?', [code]);
+  const parcel = await db.get('SELECT id FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
   if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
   const { status, location, note } = req.body;
+  const transport = String(req.body.transport || '').trim().slice(0, 120) || null;
   if (!STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  await db.run('INSERT INTO events (parcel_id, status, location, note, created_by) VALUES (?,?,?,?,?)',
-    [parcel.id, status, location || null, note || null, req.user.username]);
+  await db.run('INSERT INTO events (parcel_id, status, location, transport, note, created_by) VALUES (?,?,?,?,?,?)',
+    [parcel.id, status, location || null, transport, note || null, req.user.username]);
   await db.run('UPDATE parcels SET status = ? WHERE id = ?', [status, parcel.id]);
   await log(req.user.username, 'Updated parcel', `${code}: ${status}`);
   res.status(201).json({ ok: true });
@@ -278,9 +285,9 @@ app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
 app.get('/api/parcels', auth, wrap(async (req, res) => {
   const q = `%${(req.query.q || '').trim()}%`;
   res.json(await db.all(
-    `SELECT tracking_number, sender_name, receiver_name, receiver_phone, origin, destination, status, created_at
+    `SELECT tracking_number, sender_name, receiver_name, receiver_phone, origin, destination, status, created_by, created_at
      FROM parcels
-     WHERE LOWER(tracking_number) LIKE LOWER(?) OR LOWER(receiver_name) LIKE LOWER(?) OR LOWER(sender_name) LIKE LOWER(?)
+     WHERE (LOWER(tracking_number) LIKE LOWER(?) OR LOWER(receiver_name) LIKE LOWER(?) OR LOWER(sender_name) LIKE LOWER(?))${hiddenFromStaff(req.user)}
      ORDER BY id DESC LIMIT 50`, [q, q, q]));
 }));
 
@@ -309,11 +316,11 @@ async function init() {
     CREATE TABLE IF NOT EXISTS parcels (
       id ${ID}, tracking_number TEXT UNIQUE NOT NULL, sender_name TEXT NOT NULL, sender_phone TEXT,
       receiver_name TEXT NOT NULL, receiver_phone TEXT, origin TEXT NOT NULL, destination TEXT NOT NULL,
-      description TEXT, weight_kg ${REAL}, status TEXT NOT NULL DEFAULT 'Registered', created_by TEXT, created_at ${NOW}
+      description TEXT, weight_kg ${REAL}, status TEXT NOT NULL DEFAULT 'Registered', created_by TEXT, owner_role TEXT, created_at ${NOW}
     );
     CREATE TABLE IF NOT EXISTS events (
       id ${ID}, parcel_id INTEGER NOT NULL REFERENCES parcels(id), status TEXT NOT NULL,
-      location TEXT, note TEXT, created_by TEXT, created_at ${NOW}
+      location TEXT, transport TEXT, note TEXT, created_by TEXT, created_at ${NOW}
     );
     CREATE TABLE IF NOT EXISTS activity_log (
       id ${ID}, username TEXT, action TEXT NOT NULL, detail TEXT, created_at ${NOW}
@@ -323,6 +330,11 @@ async function init() {
   // Older local databases: add the new "created_by" columns if missing
   for (const t of ['parcels', 'events']) {
     try { await db.exec(`ALTER TABLE ${t} ADD COLUMN created_by TEXT`); } catch (e) { /* already there */ }
+  }
+
+  // Databases created by an earlier version: add the new columns if they are missing
+  for (const sql of ['ALTER TABLE events ADD COLUMN transport TEXT', 'ALTER TABLE parcels ADD COLUMN owner_role TEXT']) {
+    try { await db.exec(sql); } catch (e) { /* already there */ }
   }
 
   // First start: create the first admin account
