@@ -234,7 +234,25 @@ app.patch('/api/users/:username', auth, adminOnly, wrap(async (req, res) => {
 }));
 
 app.get('/api/activity', auth, adminOnly, wrap(async (req, res) =>
-  res.json(await db.all('SELECT username, action, detail, created_at FROM activity_log ORDER BY id DESC LIMIT 100'))));
+  res.json(await db.all('SELECT id, username, action, detail, created_at FROM activity_log ORDER BY id DESC LIMIT 100'))));
+
+// Admin: delete ONE activity line
+app.delete('/api/activity/:id', auth, adminOnly, wrap(async (req, res) => {
+  await db.run('DELETE FROM activity_log WHERE id = ?', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+}));
+
+// Admin: clear the WHOLE activity log (one line is kept to record who cleared it)
+app.delete('/api/activity', auth, adminOnly, wrap(async (req, res) => {
+  await db.run('DELETE FROM activity_log');
+  await db.run('INSERT INTO activity_log (username, action, detail) VALUES (?,?,?)',
+    [req.user.username, 'cleared the activity log', null]);
+  res.json({ ok: true });
+}));
+
+// Short tracking link used in QR codes and barcodes: /t/NUMBER shows the customer page
+// (on Netlify the same thing is done by a redirect in netlify.toml)
+app.get('/t/:code', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 /* ---------- Staff: parcels ---------- */
 // Staff cannot see or change parcels that an administrator registered. Admins see everything.
