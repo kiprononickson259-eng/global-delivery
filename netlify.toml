@@ -14,6 +14,12 @@
   to = "/.netlify/functions/api/:splat"
   status = 200
 
+# Short tracking link in QR codes and barcodes: /t/NUMBER shows the customer page
+[[redirects]]
+  from = "/t/*"
+  to = "/index.html"
+  status = 200
+
 # Staff page address
 [[redirects]]
   from = "/staff"
