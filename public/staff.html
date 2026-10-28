@@ -27,7 +27,7 @@
     .qr img { width: 170px; height: 170px; image-rendering: pixelated; display: inline-block; }
     .qr-note { text-align: center; font-size: .85rem; color: #667; }
     .label-name { text-align: center; font-weight: 700; color: var(--brand); margin-bottom: 4px; }
-    .barcode { display: block; width: min(100%, 420px); height: 100px; margin: 8px auto; }
+    .barcode { display: block; width: 100%; max-width: 100%; height: auto; margin: 8px auto; }
     .barcode-label { text-align: center; font-weight: 700; letter-spacing: 1px; }
     @media print {
       body * { visibility: hidden; }
@@ -43,7 +43,7 @@
     .login-box { max-width: 380px; margin: 40px auto; }
     .login-box a { color: var(--brand); font-size: .9rem; }
   </style>
-  <script src="config.js"></script>
+  <script src="/config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 </head>
@@ -116,7 +116,10 @@
           <div id="users"></div>
         </div>
         <h3>Activity log</h3>
-        <div class="card"><div id="activity"></div></div>
+        <div class="card">
+          <button class="del" style="margin:0 0 8px" onclick="clearActivity()">Clear all</button>
+          <div id="activity"></div>
+        </div>
       </div>
     </div>
   </main>
@@ -127,11 +130,20 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':
 let token = sessionStorage.getItem('gds_token') || '';
 let me = null;
 
+// Accepts a plain tracking number OR a scanned link (https://site/t/NUMBER or ...?code=NUMBER)
+function extractCode(v) {
+  v = String(v || '').trim();
+  const m = v.match(/[?&]code=([^&#\s]+)/i) || v.match(/\/t\/([^/?#\s]+)/i);
+  return (m ? decodeURIComponent(m[1]) : v).trim();
+}
+
+
 function renderBarcodes(root = document) {
   root.querySelectorAll('svg[data-barcode]').forEach((svg) => {
     try {
-      JsBarcode(svg, svg.dataset.barcode, {
-        format: 'CODE128', displayValue: true, font: 'monospace', height: 64, margin: 8
+      // The bars hold the full tracking link, so a scanner app can open it in the browser; the text shows the number
+      JsBarcode(svg, svg.dataset.value || svg.dataset.barcode, {
+        format: 'CODE128', displayValue: true, text: svg.dataset.barcode, font: 'monospace', width: 2, height: 70, margin: 8
       });
     } catch (error) {
       svg.insertAdjacentHTML('afterend', '<p class="error">Could not generate barcode.</p>');
@@ -154,7 +166,7 @@ function renderQRs(root) {
 }
 
 function labelHtml(code, heading) {
-  const link = location.origin + '/?code=' + encodeURIComponent(code);
+  const link = location.origin + '/t/' + encodeURIComponent(code);
   const name = (window.SITE && window.SITE.name) || 'Global Delivery Services';
   return `<div id="barcodePrint" class="card">
     ${heading ? `<p class="ok">${esc(heading)}</p>` : ''}
@@ -162,7 +174,7 @@ function labelHtml(code, heading) {
     <div class="code" style="text-align:center">${esc(code)}</div>
     <div class="qr" data-qr="${esc(link)}"></div>
     <div class="qr-note">Scan to track this parcel</div>
-    <svg class="barcode" data-barcode="${esc(code)}" aria-label="Barcode for ${esc(code)}"></svg>
+    <svg class="barcode" data-barcode="${esc(code)}" data-value="${esc(link)}" aria-label="Barcode for ${esc(code)}"></svg>
     <button type="button" onclick="window.print()">Print label</button>
   </div>`;
 }
@@ -276,8 +288,22 @@ async function loadActivity() {
   $('activity').innerHTML = r.data.length ? r.data.map(a => `
     <div class="parcel" style="cursor:default">
       <b>${esc(a.action)}</b>${a.detail ? ' · ' + esc(a.detail) : ''}<br>
-      <small>${esc(a.username)} · ${esc(a.created_at)} UTC</small>
+      <small>${esc(a.username)} · ${esc(a.created_at)} UTC</small><br>
+      <button class="del" onclick="deleteActivity(${Number(a.id)})">Delete</button>
     </div>`).join('') : '<small>No activity yet</small>';
+}
+
+async function deleteActivity(id) {
+  const r = await api('DELETE', '/api/activity/' + id);
+  if (!r.ok) { alert(r.data.error); return; }
+  loadActivity();
+}
+
+async function clearActivity() {
+  if (!confirm('Clear the WHOLE activity log? This cannot be undone.')) return;
+  const r = await api('DELETE', '/api/activity');
+  if (!r.ok) { alert(r.data.error); return; }
+  loadActivity();
 }
 
 async function loadParcels() {
@@ -327,7 +353,7 @@ async function createParcel() {
 }
 
 async function addEvent() {
-  const r = await api('POST', '/api/parcels/' + encodeURIComponent($('ucode').value.trim()) + '/events', {
+  const r = await api('POST', '/api/parcels/' + encodeURIComponent(extractCode($('ucode').value)) + '/events', {
     status: $('status').value, location: $('location').value, transport: $('utransport').value, note: $('note').value
   });
   $('updated').innerHTML = r.ok ? '<p class="ok">Updated</p>' : `<p class="error">${esc(r.data.error)}</p>`;

@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Global Delivery Services – Track your parcel</title>
-  <link rel="icon" href="logo.svg" type="image/svg+xml" />
-  <script src="config.js"></script>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+  <script src="/config.js"></script>
   <meta name="description" content="Track your parcel with Global Delivery Services. Enter your tracking number to see where it is right now." />
   <style>
     :root { --brand: #0d3b66; --brand2: #1a5fa3; --accent: #f26b21; --bg: #f4f6f8; --line: #dde2e7; --ink: #1b1f23; --muted: #667085; }
@@ -41,7 +41,7 @@
     .qr-row { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
     .qr img { width: 130px; height: 130px; image-rendering: pixelated; display: block; }
     .qr-note { font-size: .85rem; color: var(--muted); }
-    .barcode { display: block; width: min(100%, 360px); height: 90px; margin: 10px 0 4px; }
+    .barcode { display: block; width: 100%; max-width: 100%; height: auto; margin: 10px 0 4px; }
 
     /* Progress steps */
     .progress { display: flex; margin: 22px 0 6px; }
@@ -173,14 +173,23 @@ function renderQRs(root) {
 function renderBarcodes(root) {
   root.querySelectorAll('svg[data-barcode]').forEach((svg) => {
     try {
-      JsBarcode(svg, svg.dataset.barcode, { format: 'CODE128', displayValue: true, font: 'monospace', height: 56, margin: 6 });
+      // The bars hold the full tracking link, so a scanner app can open it in the browser; the text shows the number
+      JsBarcode(svg, svg.dataset.value || svg.dataset.barcode, { format: 'CODE128', displayValue: true, text: svg.dataset.barcode, font: 'monospace', width: 2, height: 70, margin: 8 });
     } catch (e) { svg.remove(); }
   });
 }
 
+// Accepts a plain tracking number OR a scanned link (https://site/t/NUMBER or ...?code=NUMBER)
+function extractCode(v) {
+  v = String(v || '').trim();
+  const m = v.match(/[?&]code=([^&#\s]+)/i) || v.match(/\/t\/([^/?#\s]+)/i);
+  return (m ? decodeURIComponent(m[1]) : v).trim();
+}
+
 async function track() {
-  const code = $('code').value.trim();
+  const code = extractCode($('code').value);
   if (!code) return;
+  $('code').value = code;
   $('result').innerHTML = '<div class="card meta">Looking up your parcel…</div>';
   try {
     const res = await fetch('/api/track/' + encodeURIComponent(code));
@@ -200,9 +209,9 @@ async function track() {
         <p class="meta">Receiver: ${esc(d.receiver)}
           ${d.description ? '<br>Contents: ' + esc(d.description) : ''}
           ${d.weight_kg ? '<br>Weight: ' + esc(d.weight_kg) + ' kg' : ''}</p>
-        <svg class="barcode" data-barcode="${esc(d.tracking_number)}" aria-label="Barcode for ${esc(d.tracking_number)}"></svg>
+        <svg class="barcode" data-barcode="${esc(d.tracking_number)}" data-value="${esc(location.origin + '/t/' + encodeURIComponent(d.tracking_number))}" aria-label="Barcode for ${esc(d.tracking_number)}"></svg>
         <div class="qr-row">
-          <div class="qr" data-qr="${esc(location.origin + '/?code=' + encodeURIComponent(d.tracking_number))}"></div>
+          <div class="qr" data-qr="${esc(location.origin + '/t/' + encodeURIComponent(d.tracking_number))}"></div>
           <div class="qr-note">Scan with your phone camera to open this tracking page.</div>
         </div>
       </div>
@@ -267,7 +276,7 @@ $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') track(); }
 // Logo and contact details come from config.js
 (function () {
   const S = window.SITE || {};
-  if (S.logo) { $('logo').src = S.logo; $('logo').classList.remove('hidden'); }
+  if (S.logo) { $('logo').src = /^(https?:)?\/\//.test(S.logo) ? S.logo : '/' + S.logo.replace(/^\/+/, ''); $('logo').classList.remove('hidden'); }
   const tiles = [];
   if (S.phone) tiles.push(['📞', 'Call us', `<a href="tel:${esc(S.phone.replace(/\s+/g, ''))}">${esc(S.phone)}</a>`]);
   if (S.whatsapp) tiles.push(['💬', 'WhatsApp', `<a href="https://wa.me/${esc(S.whatsapp.replace(/\D/g, ''))}" target="_blank" rel="noopener">Chat with us</a>`]);
@@ -281,7 +290,8 @@ $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') track(); }
   }
 })();
 
-const preset = new URLSearchParams(location.search).get('code');
+const fromPath = location.pathname.match(/^\/t\/([^/]+)/);
+const preset = fromPath ? decodeURIComponent(fromPath[1]) : new URLSearchParams(location.search).get('code');
 if (preset) { $('code').value = preset; track(); }
 </script>
 </body>
