@@ -69,7 +69,7 @@ const NOW = USE_PG
 
 const STATUSES = [
   'Registered', 'Picked up', 'At sorting hub', 'In transit', 'Arrived at destination branch',
-  'Out for delivery', 'Delivery attempted', 'Delivered', 'Returned to sender'
+  'Out for delivery', 'Delivery attempted', 'Delivered', 'Returned to sender', 'Cancelled'
 ];
 
 /* ---------- Passwords and sign-in tokens (no extra packages needed) ---------- */
@@ -293,9 +293,13 @@ app.post('/api/parcels', auth, wrap(async (req, res) => {
 
 app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
   const code = req.params.code.trim().toUpperCase();
-  const parcel = await db.get('SELECT id, created_by FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
+  const parcel = await db.get('SELECT id, created_by, status FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
   if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
   if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
+  // A cancelled parcel can only be changed again by an admin
+  if (parcel.status === 'Cancelled' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'This parcel is cancelled. Only an admin can change it.' });
+  }
   const { status, location, note } = req.body;
   const transport = String(req.body.transport || '').trim().slice(0, 120) || null;
   if (!STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status' });
