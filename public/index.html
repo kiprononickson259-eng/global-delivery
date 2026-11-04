@@ -35,6 +35,7 @@
     .badge { display: inline-block; background: var(--brand); color: #fff; border-radius: 20px; padding: 4px 14px; font-size: .85rem; font-weight: 600; }
     .badge.done { background: #2e7d32; }
     .badge.bad { background: #c62828; }
+    .alert { background: #fdecea; border-left: 4px solid #c62828; color: #8a1c1c; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: .95rem; }
     .route { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; font-weight: 700; flex-wrap: wrap; }
     .route .arrow { color: var(--accent); font-size: 1.3rem; }
     .meta { color: var(--muted); font-size: .92rem; }
@@ -149,7 +150,7 @@ function fmt(s) {
 }
 
 function progress(status) {
-  if (status === 'Returned to sender') return '';
+  if (status === 'Returned to sender' || status === 'Cancelled') return '';
   const cur = STEP_OF[status] ?? 0;
   return `<div class="progress">${STEPS.map((label, i) => `
     <div class="step ${i < cur || status === 'Delivered' ? 'done' : i === cur ? 'current' : ''}">
@@ -198,12 +199,17 @@ async function track() {
       $('result').innerHTML = `<div class="card"><p class="error">${esc(d.error)}. Please check the number and try again.</p></div>`;
       return;
     }
-    const badge = d.status === 'Delivered' ? 'done' : d.status === 'Returned to sender' ? 'bad' : '';
+    const cancelledEvent = d.status === 'Cancelled' ? d.events.find(e => e.status === 'Cancelled') : null;
+    const cancelledBanner = d.status === 'Cancelled'
+      ? `<div class="alert"><b>This parcel has been cancelled.</b>${cancelledEvent && cancelledEvent.note ? '<br>Reason: ' + esc(cancelledEvent.note) : ''}<br>Please contact us if you have any questions.</div>`
+      : '';
+    const badge = d.status === 'Delivered' ? 'done' : (d.status === 'Returned to sender' || d.status === 'Cancelled') ? 'bad' : '';
     $('result').innerHTML = `
       <div id="receipt">
       <div class="card">
         <div class="code">${esc(d.tracking_number)}</div>
         <p><span class="badge ${badge}">${esc(d.status)}</span></p>
+        ${cancelledBanner}
         <div class="route"><span>${esc(d.origin)}</span><span class="arrow">→</span><span>${esc(d.destination)}</span></div>
         ${progress(d.status)}
         <p class="meta">Receiver: ${esc(d.receiver)}
