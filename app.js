@@ -364,10 +364,11 @@ app.post('/api/parcels/:code/payments', auth, wrap(async (req, res) => {
   const taxC = Math.round(subC * taxRate / 100);
   const totC = subC + taxC;
   const { id } = await db.run(
-    `INSERT INTO payments (parcel_id, item, qty, unit_cents, subtotal_cents, tax_rate, tax_cents, total_cents, currency, method, paid_by, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO payments (parcel_id, item, qty, unit_cents, subtotal_cents, tax_rate, tax_cents, total_cents, currency, method, paid_by, created_by, served_by)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [parcel.id, item, qty, unitC, subC, taxRate, taxC, totC, currency, method,
-      String(b.paid_by || '').trim().slice(0, 120) || null, req.user.username]);
+      String(b.paid_by || '').trim().slice(0, 120) || null, req.user.username,
+      String(b.served_by || '').trim().slice(0, 80) || req.user.full_name || req.user.username]);
   await log(req.user.username, 'Issued receipt', `${receiptNo(id)} for ${parcel.tracking_number}: ${currency} ${(totC / 100).toFixed(2)}`);
   res.status(201).json({ id, receipt_no: receiptNo(id) });
 }));
@@ -394,8 +395,23 @@ app.get('/api/receipts/:id', auth, wrap(async (req, res) => {
     item: pay.item, qty: pay.qty, unit_cents: pay.unit_cents, subtotal_cents: pay.subtotal_cents,
     tax_rate: pay.tax_rate, tax_cents: pay.tax_cents, total_cents: pay.total_cents,
     currency: pay.currency, method: pay.method, paid_by: pay.paid_by,
-    voided: Number(pay.voided) === 1, served_by: pay.created_by
+    voided: Number(pay.voided) === 1, served_by: pay.served_by || pay.created_by
   });
+}));
+
+// Change the "Served by" name on a receipt (admin, or the staff member who owns the parcel)
+app.patch('/api/receipts/:id', auth, wrap(async (req, res) => {
+  const pay = await db.get('SELECT id, parcel_id, voided FROM payments WHERE id = ?', [Number(req.params.id) || 0]);
+  if (!pay) return res.status(404).json({ error: 'Receipt not found' });
+  const parcel = await db.get('SELECT id, created_by FROM parcels WHERE id = ?' + hiddenFromStaff(req.user), [pay.parcel_id]);
+  if (!parcel) return res.status(404).json({ error: 'Receipt not found' });
+  if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
+  if (Number(pay.voided) === 1) return res.status(400).json({ error: 'A voided receipt cannot be changed' });
+  const name = String(req.body.served_by || '').trim().slice(0, 80);
+  if (!name) return res.status(400).json({ error: 'Enter the name of the person who served the customer' });
+  await db.run('UPDATE payments SET served_by = ? WHERE id = ?', [name, pay.id]);
+  await log(req.user.username, 'Edited receipt', `${receiptNo(pay.id)}: served by ${name}`);
+  res.json({ ok: true, served_by: name });
 }));
 
 // Admin only: a wrong receipt is voided (kept on record, marked VOID), never silently deleted
@@ -446,7 +462,7 @@ async function init() {
       id ${ID}, parcel_id INTEGER NOT NULL REFERENCES parcels(id), item TEXT NOT NULL, qty INTEGER NOT NULL,
       unit_cents INTEGER NOT NULL, subtotal_cents INTEGER NOT NULL, tax_rate ${REAL} NOT NULL, tax_cents INTEGER NOT NULL,
       total_cents INTEGER NOT NULL, currency TEXT NOT NULL, method TEXT NOT NULL, paid_by TEXT, note TEXT,
-      voided INTEGER NOT NULL DEFAULT 0, voided_by TEXT, created_by TEXT, created_at ${NOW}
+      voided INTEGER NOT NULL DEFAULT 0, voided_by TEXT, created_by TEXT, served_by TEXT, created_at ${NOW}
     );
     CREATE INDEX IF NOT EXISTS idx_events_parcel ON events(parcel_id);
     CREATE INDEX IF NOT EXISTS idx_payments_parcel ON payments(parcel_id);
@@ -457,7 +473,7 @@ async function init() {
   }
 
   // Databases created by an earlier version: add the new columns if they are missing
-  for (const sql of ['ALTER TABLE events ADD COLUMN transport TEXT', 'ALTER TABLE parcels ADD COLUMN owner_role TEXT']) {
+  for (const sql of ['ALTER TABLE events ADD COLUMN transport TEXT', 'ALTER TABLE parcels ADD COLUMN owner_role TEXT', 'ALTER TABLE payments ADD COLUMN served_by TEXT']) {
     try { await db.exec(sql); } catch (e) { /* already there */ }
   }
 
