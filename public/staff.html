@@ -99,6 +99,7 @@
         <div class="row"><input id="pcurrency" placeholder="Currency (e.g. KES)" /><input id="ptax" type="number" min="0" max="100" step="0.01" placeholder="Tax %" /></div>
         <select id="pmethod"><option>Cash</option><option>M-Pesa</option><option>Card</option><option>Bank transfer</option><option>Other</option></select>
         <input id="ppaidby" placeholder="Received from (customer name)" />
+        <input id="pservedby" placeholder="Served by (name of the person who served the customer)" />
         <button onclick="issueReceipt()">Issue receipt</button>
         <div id="receiptMsg"></div>
         <div id="receiptList"></div>
@@ -225,6 +226,7 @@ async function showPanel() {
   $('lockBtn').classList.remove('hidden');
   $('who').textContent = me.full_name + ' (' + me.role + ')';
   $('who').classList.remove('hidden');
+  if (!$('pservedby').value) $('pservedby').value = me.full_name || me.username;
   const statuses = await (await fetch('/api/statuses')).json();
   $('status').innerHTML = statuses.map(s => `<option>${esc(s)}</option>`).join('');
   $('adminOnly').classList.toggle('hidden', me.role !== 'admin');
@@ -384,7 +386,7 @@ function receiptHtml(r) {
   const link = location.origin + '/t/' + encodeURIComponent(r.tracking_number);
   const contact = [S.address, S.phone, S.email].filter(Boolean).map(esc).join('<br>');
   const cur = esc(r.currency);
-  return `<div id="receiptPrint" class="rcpt" data-no="${esc(r.receipt_no)}">
+  return `<div id="receiptPrint" class="rcpt" data-no="${esc(r.receipt_no)}" data-served="${esc(r.served_by || '')}">
     ${r.voided ? '<div class="rcpt-void">VOID</div>' : ''}
     ${logo ? `<img class="rcpt-logo" src="${esc(logo)}" alt="">` : ''}
     <div class="rcpt-rule dbl"></div>
@@ -413,6 +415,7 @@ function receiptHtml(r) {
   <div class="rcpt-actions">
     <button type="button" onclick="printReceipt()">Print / Save as PDF</button>
     <button type="button" style="background:var(--brand)" onclick="downloadReceiptImage()">Download image</button>
+    ${r.voided ? '' : `<button type="button" style="background:#555" onclick="editServedBy(${Number(r.id)})">Edit &quot;Served by&quot; name</button>`}
     ${me && me.role === 'admin' && !r.voided ? `<button type="button" class="del" style="background:#c62828" onclick="voidReceipt(${Number(r.id)})">Void receipt</button>` : ''}
   </div>`;
 }
@@ -457,6 +460,15 @@ async function downloadReceiptImage() {
   a.remove();
 }
 
+async function editServedBy(id) {
+  const el = $('receiptPrint');
+  const name = prompt('Name of the person who served the customer:', el ? el.dataset.served : '');
+  if (name === null) return;
+  const r = await api('PATCH', '/api/receipts/' + Number(id), { served_by: name });
+  if (!r.ok) { alert(r.data.error); return; }
+  await viewReceipt(id);
+}
+
 async function viewReceipt(id) {
   const r = await api('GET', '/api/receipts/' + Number(id));
   if (!r.ok) { $('receiptView').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
@@ -495,7 +507,7 @@ async function issueReceipt() {
   if (!code) { $('receiptMsg').innerHTML = '<p class="error">Enter the tracking number first</p>'; return; }
   const r = await api('POST', '/api/parcels/' + encodeURIComponent(code) + '/payments', {
     item: $('pitem').value, qty: $('pqty').value, amount: $('pamount').value, currency: $('pcurrency').value,
-    tax_rate: $('ptax').value, method: $('pmethod').value, paid_by: $('ppaidby').value
+    tax_rate: $('ptax').value, method: $('pmethod').value, paid_by: $('ppaidby').value, served_by: $('pservedby').value
   });
   if (!r.ok) { $('receiptMsg').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
   $('receiptMsg').innerHTML = `<p class="ok">Receipt ${esc(r.data.receipt_no)} issued.</p>`;
