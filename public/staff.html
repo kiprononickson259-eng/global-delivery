@@ -46,6 +46,7 @@
   <script src="/config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
   <header>
@@ -360,7 +361,7 @@ const RECEIPT_CSS = `
 .rcpt-thanks { text-align: center; font-weight: 700; margin: 6px 0; }
 .rcpt .qr { text-align: center; margin: 8px 0 2px; }
 .rcpt .qr img { width: 130px; height: 130px; image-rendering: pixelated; display: inline-block; }
-.rcpt-void { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 64px; font-weight: 800; color: rgba(198,40,40,.35); transform: rotate(-20deg); pointer-events: none; }
+.rcpt-void { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 64px; font-weight: 800; color: rgba(198,40,40,.35); transform: rotate(-20deg); pointer-events: none; }
 .rcpt-actions { max-width: 340px; margin: 0 auto; }
 `;
 document.head.insertAdjacentHTML('beforeend', '<style>' + RECEIPT_CSS + '</style>');
@@ -383,7 +384,7 @@ function receiptHtml(r) {
   const link = location.origin + '/t/' + encodeURIComponent(r.tracking_number);
   const contact = [S.address, S.phone, S.email].filter(Boolean).map(esc).join('<br>');
   const cur = esc(r.currency);
-  return `<div id="receiptPrint" class="rcpt">
+  return `<div id="receiptPrint" class="rcpt" data-no="${esc(r.receipt_no)}">
     ${r.voided ? '<div class="rcpt-void">VOID</div>' : ''}
     ${logo ? `<img class="rcpt-logo" src="${esc(logo)}" alt="">` : ''}
     <div class="rcpt-rule dbl"></div>
@@ -411,6 +412,7 @@ function receiptHtml(r) {
   </div>
   <div class="rcpt-actions">
     <button type="button" onclick="printReceipt()">Print / Save as PDF</button>
+    <button type="button" style="background:var(--brand)" onclick="downloadReceiptImage()">Download image</button>
     ${me && me.role === 'admin' && !r.voided ? `<button type="button" class="del" style="background:#c62828" onclick="voidReceipt(${Number(r.id)})">Void receipt</button>` : ''}
   </div>`;
 }
@@ -427,6 +429,32 @@ function printReceipt() {
   w.document.close();
   w.focus();
   setTimeout(() => { w.print(); }, 500);
+}
+
+// Saves the receipt as ONE picture (PNG)
+async function captureReceipt(el, withLogo) {
+  const canvas = await html2canvas(el, {
+    backgroundColor: '#ffffff', scale: 3, useCORS: true, scrollX: 0, scrollY: -window.scrollY,
+    ignoreElements: (n) => !withLogo && n.classList && n.classList.contains('rcpt-logo')
+  });
+  return canvas.toDataURL('image/png');
+}
+
+async function downloadReceiptImage() {
+  const el = $('receiptPrint');
+  if (!el) return;
+  let url;
+  try { url = await captureReceipt(el, true); }
+  catch (e) {
+    try { url = await captureReceipt(el, false); }   // second try without the logo picture
+    catch (e2) { alert('Could not make the image. Refresh the page (Ctrl + F5) and try again, or use Print / Save as PDF.'); return; }
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'receipt-' + (el.dataset.no || 'payment') + '.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 async function viewReceipt(id) {
