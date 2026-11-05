@@ -90,6 +90,20 @@
         <div id="updated"></div>
       </div>
 
+      <h3>Payment receipt</h3>
+      <div class="card">
+        <input id="pcode" placeholder="Tracking number" onchange="loadReceipts()" />
+        <input id="pitem" value="Delivery fee" placeholder="Item (e.g. Delivery fee)" />
+        <div class="row"><input id="pqty" type="number" min="1" step="1" value="1" placeholder="Qty" /><input id="pamount" type="number" min="0" step="0.01" placeholder="Delivery fee paid (before tax)" /></div>
+        <div class="row"><input id="pcurrency" placeholder="Currency (e.g. KES)" /><input id="ptax" type="number" min="0" max="100" step="0.01" placeholder="Tax %" /></div>
+        <select id="pmethod"><option>Cash</option><option>M-Pesa</option><option>Card</option><option>Bank transfer</option><option>Other</option></select>
+        <input id="ppaidby" placeholder="Received from (customer name)" />
+        <button onclick="issueReceipt()">Issue receipt</button>
+        <div id="receiptMsg"></div>
+        <div id="receiptList"></div>
+        <div id="receiptView"></div>
+      </div>
+
       <h3>Recent parcels</h3>
       <div class="card">
         <input id="search" placeholder="Search by number or name" oninput="loadParcels()" />
@@ -129,6 +143,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let token = sessionStorage.getItem('gds_token') || '';
 let me = null;
+let lastRows = [];
 
 // Accepts a plain tracking number OR a scanned link (https://site/t/NUMBER or ...?code=NUMBER)
 function extractCode(v) {
@@ -196,7 +211,9 @@ async function api(method, url, body) {
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
     body: body ? JSON.stringify(body) : undefined
   });
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); }
+  catch (e) { data = { error: 'The server could not do this (error ' + res.status + '). Check that the newest app.js is uploaded on GitHub (main page, not a folder) and that the latest Netlify deploy says Published.' }; }
   if (res.status === 401 && me) { lock('Your session ended. Please sign in again.'); }
   return { ok: res.ok, data };
 }
@@ -313,14 +330,160 @@ async function loadParcels() {
 }
 
 function renderList(rows) {
+  lastRows = rows;
   $('list').innerHTML = rows.length ? rows.map(p => `
     <div class="parcel" ${p.can_edit ? `onclick="pick('${esc(p.tracking_number)}')"` : ''}>
-      <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}<br>
+      <b>${esc(p.tracking_number)}</b> · ${esc(p.status)}${p.paid ? ' · <b class="ok">PAID</b>' : ''}<br>
       ${esc(p.origin)} → ${esc(p.destination)}<br>
       <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}${p.created_by ? ' · registered by ' + esc(p.created_by) : ''}</small><br>
-      ${p.can_edit ? `<button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>` : '<small>View only (registered by someone else)</small>'}
+      ${p.can_edit ? `<button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>
+        <button class="del" style="background:#2e7d32" onclick="event.stopPropagation(); pickReceipt('${esc(p.tracking_number)}')">Receipt</button>` : '<small>View only (registered by someone else)</small>'}
       ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
     </div>`).join('') : '<small>No parcels yet</small>';
+}
+
+/* ---------- Payment receipts ---------- */
+const RECEIPT_CSS = `
+.rcpt { position: relative; max-width: 340px; margin: 12px auto; background: #fff; border: 1px dashed #999; padding: 16px 14px; font-family: ui-monospace, "Courier New", monospace; font-size: 14px; color: #000; line-height: 1.4; }
+.rcpt-logo { display: block; max-width: 90px; max-height: 70px; margin: 0 auto 6px; }
+.rcpt-name { text-align: center; font-weight: 700; font-size: 16px; }
+.rcpt-small { text-align: center; font-size: 12px; color: #444; }
+.rcpt-rule { border-top: 1px dashed #000; margin: 8px 0; }
+.rcpt-rule.dbl { border-top: 3px double #000; }
+.rcpt-row { display: flex; justify-content: space-between; gap: 10px; margin: 2px 0; }
+.rcpt-row b { text-align: right; }
+.rcpt-row.big { font-size: 16px; font-weight: 700; }
+.rcpt-items { display: grid; grid-template-columns: 1fr 36px auto; gap: 6px; margin: 2px 0; }
+.rcpt-items span:nth-child(2) { text-align: center; }
+.rcpt-items span:nth-child(3) { text-align: right; }
+.rcpt-items.head { font-weight: 700; }
+.rcpt-thanks { text-align: center; font-weight: 700; margin: 6px 0; }
+.rcpt .qr { text-align: center; margin: 8px 0 2px; }
+.rcpt .qr img { width: 130px; height: 130px; image-rendering: pixelated; display: inline-block; }
+.rcpt-void { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 64px; font-weight: 800; color: rgba(198,40,40,.35); transform: rotate(-20deg); pointer-events: none; }
+.rcpt-actions { max-width: 340px; margin: 0 auto; }
+`;
+document.head.insertAdjacentHTML('beforeend', '<style>' + RECEIPT_CSS + '</style>');
+
+const money = (c) => (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const when = (s) => {
+  const d = new Date(String(s).replace(' ', 'T') + 'Z');
+  return isNaN(d) ? esc(s) : esc(d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }));
+};
+
+(function setReceiptDefaults() {
+  const S = window.SITE || {};
+  $('pcurrency').value = S.currency || 'KES';
+  $('ptax').value = S.taxRate != null ? S.taxRate : 16;
+})();
+
+function receiptHtml(r) {
+  const S = window.SITE || {};
+  const logo = S.logo ? (/^(https?:)?\/\//.test(S.logo) ? S.logo : location.origin + '/' + S.logo.replace(/^\/+/, '')) : '';
+  const link = location.origin + '/t/' + encodeURIComponent(r.tracking_number);
+  const contact = [S.address, S.phone, S.email].filter(Boolean).map(esc).join('<br>');
+  const cur = esc(r.currency);
+  return `<div id="receiptPrint" class="rcpt">
+    ${r.voided ? '<div class="rcpt-void">VOID</div>' : ''}
+    ${logo ? `<img class="rcpt-logo" src="${esc(logo)}" alt="">` : ''}
+    <div class="rcpt-rule dbl"></div>
+    <div class="rcpt-name">${esc(S.name || 'Global Delivery Services')}</div>
+    ${contact ? `<div class="rcpt-small">${contact}</div>` : ''}
+    <div class="rcpt-rule"></div>
+    <div class="rcpt-row"><span>Receipt No:</span><b>${esc(r.receipt_no)}</b></div>
+    <div class="rcpt-row"><span>Date:</span><b>${when(r.created_at)}</b></div>
+    <div class="rcpt-row"><span>Tracking No:</span><b>${esc(r.tracking_number)}</b></div>
+    ${r.paid_by ? `<div class="rcpt-row"><span>Received from:</span><b>${esc(r.paid_by)}</b></div>` : ''}
+    <div class="rcpt-row"><span>Route:</span><b>${esc(r.origin)} → ${esc(r.destination)}</b></div>
+    <div class="rcpt-rule"></div>
+    <div class="rcpt-items head"><span>ITEM</span><span>QTY</span><span>TOTAL</span></div>
+    <div class="rcpt-items"><span>${esc(r.item)}</span><span>${Number(r.qty)}</span><span>${cur} ${money(r.subtotal_cents)}</span></div>
+    <div class="rcpt-rule"></div>
+    <div class="rcpt-row"><span>Subtotal:</span><b>${cur} ${money(r.subtotal_cents)}</b></div>
+    <div class="rcpt-row"><span>Tax (${Number(r.tax_rate)}%):</span><b>${cur} ${money(r.tax_cents)}</b></div>
+    <div class="rcpt-row big"><span>TOTAL:</span><b>${cur} ${money(r.total_cents)}</b></div>
+    <div class="rcpt-row"><span>Paid by:</span><b>${esc(r.method)}</b></div>
+    <div class="rcpt-row"><span>Served by:</span><b>${esc(r.served_by || '')}</b></div>
+    <div class="rcpt-rule dbl"></div>
+    <div class="rcpt-thanks">Thank you for your business!</div>
+    <div class="qr" data-qr="${esc(link)}"></div>
+    <div class="rcpt-small">Scan to track this parcel</div>
+  </div>
+  <div class="rcpt-actions">
+    <button type="button" onclick="printReceipt()">Print / Save as PDF</button>
+    ${me && me.role === 'admin' && !r.voided ? `<button type="button" class="del" style="background:#c62828" onclick="voidReceipt(${Number(r.id)})">Void receipt</button>` : ''}
+  </div>`;
+}
+
+// Prints only the receipt (opens a small clean window, so nothing else from this page is printed)
+function printReceipt() {
+  const el = $('receiptPrint');
+  if (!el) return;
+  const w = window.open('', '_blank', 'width=420,height=700');
+  if (!w) { window.print(); return; }
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Receipt</title><style>'
+    + RECEIPT_CSS + '@page { size: 80mm auto; margin: 4mm; } body { margin: 0; background: #fff; } .rcpt { border: 0; margin: 0 auto; }'
+    + '</style></head><body>' + el.outerHTML + '</body></html>');
+  w.document.close();
+  w.focus();
+  setTimeout(() => { w.print(); }, 500);
+}
+
+async function viewReceipt(id) {
+  const r = await api('GET', '/api/receipts/' + Number(id));
+  if (!r.ok) { $('receiptView').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  $('receiptView').innerHTML = receiptHtml(r.data);
+  renderQRs($('receiptView'));
+  $('receiptView').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+async function loadReceipts() {
+  const code = extractCode($('pcode').value);
+  if (!code) { $('receiptList').innerHTML = ''; return; }
+  const r = await api('GET', '/api/parcels/' + encodeURIComponent(code) + '/payments');
+  if (!r.ok) { $('receiptList').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  $('receiptList').innerHTML = r.data.length
+    ? '<p><b>Receipts for this parcel</b></p>' + r.data.map(x => `
+      <div class="parcel" style="cursor:default">
+        <b>${esc(x.receipt_no)}</b> · ${esc(x.currency)} ${money(x.total_cents)}${x.voided ? ' · <span class="error">VOID</span>' : ''}<br>
+        <small>${when(x.created_at)}</small>
+        <button class="del" style="background:var(--brand)" onclick="viewReceipt(${Number(x.id)})">View</button>
+      </div>`).join('')
+    : '<small>No receipts for this parcel yet.</small>';
+}
+
+function pickReceipt(code) {
+  const row = lastRows.find(p => p.tracking_number === code);
+  $('pcode').value = code;
+  $('ppaidby').value = row ? row.sender_name : '';
+  $('receiptView').innerHTML = '';
+  $('receiptMsg').innerHTML = '';
+  loadReceipts();
+  $('pcode').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+async function issueReceipt() {
+  const code = extractCode($('pcode').value);
+  if (!code) { $('receiptMsg').innerHTML = '<p class="error">Enter the tracking number first</p>'; return; }
+  const r = await api('POST', '/api/parcels/' + encodeURIComponent(code) + '/payments', {
+    item: $('pitem').value, qty: $('pqty').value, amount: $('pamount').value, currency: $('pcurrency').value,
+    tax_rate: $('ptax').value, method: $('pmethod').value, paid_by: $('ppaidby').value
+  });
+  if (!r.ok) { $('receiptMsg').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  $('receiptMsg').innerHTML = `<p class="ok">Receipt ${esc(r.data.receipt_no)} issued.</p>`;
+  $('pamount').value = '';
+  await loadReceipts();
+  await viewReceipt(r.data.id);
+  loadParcels();
+}
+
+async function voidReceipt(id) {
+  if (!confirm('Void this receipt? It stays on record marked VOID and cannot be undone.')) return;
+  const r = await api('POST', '/api/receipts/' + Number(id) + '/void');
+  if (!r.ok) { alert(r.data.error); return; }
+  await loadReceipts();
+  await viewReceipt(id);
+  loadParcels();
 }
 
 function pick(code) { $('ucode').value = code; window.scrollTo({ top: 0, behavior: 'smooth' }); }
