@@ -313,11 +313,12 @@ app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
 app.get('/api/parcels', auth, wrap(async (req, res) => {
   const q = `%${(req.query.q || '').trim()}%`;
   const rows = await db.all(
-    `SELECT tracking_number, sender_name, receiver_name, receiver_phone, origin, destination, status, created_by, created_at
+    `SELECT tracking_number, sender_name, receiver_name, receiver_phone, origin, destination, status, created_by, created_at,
+            CASE WHEN EXISTS (SELECT 1 FROM payments pm WHERE pm.parcel_id = parcels.id AND pm.voided = 0) THEN 1 ELSE 0 END AS paid
      FROM parcels
      WHERE (LOWER(tracking_number) LIKE LOWER(?) OR LOWER(receiver_name) LIKE LOWER(?) OR LOWER(sender_name) LIKE LOWER(?))${hiddenFromStaff(req.user)}
      ORDER BY id DESC LIMIT 50`, [q, q, q]);
-  res.json(rows.map(p => ({ ...p, can_edit: canEdit(req.user, p) })));
+  res.json(rows.map(p => ({ ...p, paid: Number(p.paid) === 1, can_edit: canEdit(req.user, p) })));
 }));
 
 app.get('/api/parcels/:code/label', auth, wrap(async (req, res) => {
@@ -328,11 +329,90 @@ app.get('/api/parcels/:code/label', auth, wrap(async (req, res) => {
   res.json({ tracking_number: parcel.tracking_number });
 }));
 
+/* ---------- Payment receipts (delivery fee paid) ---------- */
+// Staff can issue and view receipts only for parcels they registered; admins for every parcel.
+const PAY_METHODS = ['Cash', 'M-Pesa', 'Card', 'Bank transfer', 'Other'];
+const receiptNo = (id) => 'RC-' + String(id).padStart(6, '0');
+
+async function parcelForReceipt(req, res, code) {
+  const parcel = await db.get(
+    'SELECT id, tracking_number, created_by FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
+  if (!parcel) { res.status(404).json({ error: 'Tracking number not found' }); return null; }
+  if (!canEdit(req.user, parcel)) { res.status(403).json({ error: NOT_YOURS }); return null; }
+  return parcel;
+}
+
+app.post('/api/parcels/:code/payments', auth, wrap(async (req, res) => {
+  const parcel = await parcelForReceipt(req, res, req.params.code.trim().toUpperCase());
+  if (!parcel) return;
+  const b = req.body || {};
+  const item = String(b.item || 'Delivery fee').trim().slice(0, 120) || 'Delivery fee';
+  const qty = Number(b.qty || 1);
+  const unit = Number(b.amount);
+  const taxRate = b.tax_rate === '' || b.tax_rate == null ? 0 : Number(b.tax_rate);
+  const currency = String(b.currency || '').trim().toUpperCase();
+  const method = PAY_METHODS.includes(b.method) ? b.method : null;
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000) return res.status(400).json({ error: 'Quantity must be a whole number from 1 to 1000' });
+  if (!Number.isFinite(unit) || unit <= 0 || unit > 100000000) return res.status(400).json({ error: 'Enter the amount the customer paid' });
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) return res.status(400).json({ error: 'Tax must be between 0 and 100' });
+  if (!/^[A-Z]{2,5}$/.test(currency)) return res.status(400).json({ error: 'Enter a currency, for example KES' });
+  if (!method) return res.status(400).json({ error: 'Choose how the customer paid' });
+
+  // Money is stored in whole cents to avoid rounding errors
+  const unitC = Math.round(unit * 100);
+  const subC = unitC * qty;
+  const taxC = Math.round(subC * taxRate / 100);
+  const totC = subC + taxC;
+  const { id } = await db.run(
+    `INSERT INTO payments (parcel_id, item, qty, unit_cents, subtotal_cents, tax_rate, tax_cents, total_cents, currency, method, paid_by, created_by)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [parcel.id, item, qty, unitC, subC, taxRate, taxC, totC, currency, method,
+      String(b.paid_by || '').trim().slice(0, 120) || null, req.user.username]);
+  await log(req.user.username, 'Issued receipt', `${receiptNo(id)} for ${parcel.tracking_number}: ${currency} ${(totC / 100).toFixed(2)}`);
+  res.status(201).json({ id, receipt_no: receiptNo(id) });
+}));
+
+app.get('/api/parcels/:code/payments', auth, wrap(async (req, res) => {
+  const parcel = await parcelForReceipt(req, res, req.params.code.trim().toUpperCase());
+  if (!parcel) return;
+  const rows = await db.all('SELECT id, total_cents, currency, voided, created_at FROM payments WHERE parcel_id = ? ORDER BY id DESC', [parcel.id]);
+  res.json(rows.map(r => ({ ...r, voided: Number(r.voided) === 1, receipt_no: receiptNo(r.id) })));
+}));
+
+app.get('/api/receipts/:id', auth, wrap(async (req, res) => {
+  const pay = await db.get('SELECT * FROM payments WHERE id = ?', [Number(req.params.id) || 0]);
+  if (!pay) return res.status(404).json({ error: 'Receipt not found' });
+  const parcel = await db.get(
+    'SELECT id, tracking_number, sender_name, receiver_name, origin, destination, created_by FROM parcels WHERE id = ?' + hiddenFromStaff(req.user),
+    [pay.parcel_id]);
+  if (!parcel) return res.status(404).json({ error: 'Receipt not found' });
+  if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
+  res.json({
+    id: pay.id, receipt_no: receiptNo(pay.id), created_at: pay.created_at,
+    tracking_number: parcel.tracking_number, sender_name: parcel.sender_name, receiver_name: parcel.receiver_name,
+    origin: parcel.origin, destination: parcel.destination,
+    item: pay.item, qty: pay.qty, unit_cents: pay.unit_cents, subtotal_cents: pay.subtotal_cents,
+    tax_rate: pay.tax_rate, tax_cents: pay.tax_cents, total_cents: pay.total_cents,
+    currency: pay.currency, method: pay.method, paid_by: pay.paid_by,
+    voided: Number(pay.voided) === 1, served_by: pay.created_by
+  });
+}));
+
+// Admin only: a wrong receipt is voided (kept on record, marked VOID), never silently deleted
+app.post('/api/receipts/:id/void', auth, adminOnly, wrap(async (req, res) => {
+  const pay = await db.get('SELECT id FROM payments WHERE id = ?', [Number(req.params.id) || 0]);
+  if (!pay) return res.status(404).json({ error: 'Receipt not found' });
+  await db.run('UPDATE payments SET voided = 1, voided_by = ? WHERE id = ?', [req.user.username, pay.id]);
+  await log(req.user.username, 'Voided receipt', receiptNo(pay.id));
+  res.json({ ok: true });
+}));
+
 app.delete('/api/parcels/:code', auth, adminOnly, wrap(async (req, res) => {
   const code = req.params.code.trim().toUpperCase();
   const parcel = await db.get('SELECT id FROM parcels WHERE tracking_number = ?', [code]);
   if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
   await db.run('DELETE FROM events WHERE parcel_id = ?', [parcel.id]);
+  await db.run('DELETE FROM payments WHERE parcel_id = ?', [parcel.id]);
   await db.run('DELETE FROM parcels WHERE id = ?', [parcel.id]);
   await log(req.user.username, 'Deleted parcel', code);
   res.json({ ok: true });
@@ -362,7 +442,14 @@ async function init() {
     CREATE TABLE IF NOT EXISTS activity_log (
       id ${ID}, username TEXT, action TEXT NOT NULL, detail TEXT, created_at ${NOW}
     );
+    CREATE TABLE IF NOT EXISTS payments (
+      id ${ID}, parcel_id INTEGER NOT NULL REFERENCES parcels(id), item TEXT NOT NULL, qty INTEGER NOT NULL,
+      unit_cents INTEGER NOT NULL, subtotal_cents INTEGER NOT NULL, tax_rate ${REAL} NOT NULL, tax_cents INTEGER NOT NULL,
+      total_cents INTEGER NOT NULL, currency TEXT NOT NULL, method TEXT NOT NULL, paid_by TEXT, note TEXT,
+      voided INTEGER NOT NULL DEFAULT 0, voided_by TEXT, created_by TEXT, created_at ${NOW}
+    );
     CREATE INDEX IF NOT EXISTS idx_events_parcel ON events(parcel_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_parcel ON payments(parcel_id);
   `);
   // Older local databases: add the new "created_by" columns if missing
   for (const t of ['parcels', 'events']) {
