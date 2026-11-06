@@ -331,7 +331,13 @@ app.get('/api/parcels/:code/label', auth, wrap(async (req, res) => {
 
 /* ---------- Payment receipts (delivery fee paid) ---------- */
 // Staff can issue and view receipts only for parcels they registered; admins for every parcel.
-const PAY_METHODS = ['Cash', 'M-Pesa', 'Card', 'Bank transfer', 'Other'];
+const PAY_METHODS = [
+  'Cash',
+  'M-Pesa', 'Airtel Money', 'MTN Mobile Money', 'Vodacom M-Pesa', 'Tigo Pesa',
+  'EVC Plus', 'Waafi', 'Sahal', 'ZAAD Service',
+  'Dahabshiil', 'Western Union', 'Mukuru',
+  'Card', 'Bank transfer', 'Other'
+];
 const receiptNo = (id) => 'RC-' + String(id).padStart(6, '0');
 
 async function parcelForReceipt(req, res, code) {
