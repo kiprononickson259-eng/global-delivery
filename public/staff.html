@@ -96,8 +96,28 @@
         <input id="pcode" placeholder="Tracking number" onchange="loadReceipts()" />
         <input id="pitem" value="Delivery fee" placeholder="Item (e.g. Delivery fee)" />
         <div class="row"><input id="pqty" type="number" min="1" step="1" value="1" placeholder="Qty" /><input id="pamount" type="number" min="0" step="0.01" placeholder="Delivery fee paid (before tax)" /></div>
-        <div class="row"><input id="pcurrency" placeholder="Currency (e.g. KES)" /><input id="ptax" type="number" min="0" max="100" step="0.01" placeholder="Tax %" /></div>
-        <select id="pmethod"><option>Cash</option><option>M-Pesa</option><option>Card</option><option>Bank transfer</option><option>Other</option></select>
+        <div class="row"><input id="pcurrency" list="currencyList" placeholder="Currency (pick or type, e.g. KES)" /><input id="ptax" type="number" min="0" max="100" step="0.01" placeholder="Tax %" /></div>
+        <datalist id="currencyList">
+          <option value="KES">Kenyan shilling</option><option value="USD">US dollar</option><option value="GBP">British pound</option>
+          <option value="EUR">Euro</option><option value="UGX">Ugandan shilling</option><option value="TZS">Tanzanian shilling</option>
+          <option value="SOS">Somali shilling</option><option value="SLSH">Somaliland shilling</option><option value="ETB">Ethiopian birr</option>
+          <option value="RWF">Rwandan franc</option><option value="ZAR">South African rand</option><option value="AED">UAE dirham</option>
+          <option value="SAR">Saudi riyal</option><option value="CAD">Canadian dollar</option><option value="AUD">Australian dollar</option>
+        </datalist>
+        <select id="pmethod">
+          <option>Cash</option>
+          <optgroup label="Mobile money">
+            <option>M-Pesa</option><option>Airtel Money</option><option>MTN Mobile Money</option><option>Vodacom M-Pesa</option><option>Tigo Pesa</option>
+            <option>EVC Plus</option><option>Waafi</option><option>Sahal</option><option>ZAAD Service</option>
+          </optgroup>
+          <optgroup label="Money transfer">
+            <option>Dahabshiil</option><option>Western Union</option><option>Mukuru</option>
+          </optgroup>
+          <optgroup label="Bank and card">
+            <option>Card</option><option>Bank transfer</option>
+          </optgroup>
+          <option>Other</option>
+        </select>
         <input id="ppaidby" placeholder="Received from (customer name)" />
         <input id="pservedby" placeholder="Served by (name of the person who served the customer)" />
         <button onclick="issueReceipt()">Issue receipt</button>
@@ -382,16 +402,16 @@ const when = (s) => {
 
 function receiptHtml(r) {
   const S = window.SITE || {};
-  const logo = S.logo ? (/^(https?:)?\/\//.test(S.logo) ? S.logo : location.origin + '/' + S.logo.replace(/^\/+/, '')) : '';
+  const showHeader = S.receiptHeader === true;   // set receiptHeader: true in config.js to print the company name and contact details
   const link = location.origin + '/t/' + encodeURIComponent(r.tracking_number);
   const contact = [S.address, S.phone, S.email].filter(Boolean).map(esc).join('<br>');
   const cur = esc(r.currency);
   return `<div id="receiptPrint" class="rcpt" data-no="${esc(r.receipt_no)}" data-served="${esc(r.served_by || '')}">
     ${r.voided ? '<div class="rcpt-void">VOID</div>' : ''}
-    ${logo ? `<img class="rcpt-logo" src="${esc(logo)}" alt="">` : ''}
     <div class="rcpt-rule dbl"></div>
-    <div class="rcpt-name">${esc(S.name || 'Global Delivery Services')}</div>
-    ${contact ? `<div class="rcpt-small">${contact}</div>` : ''}
+    ${showHeader
+      ? `<div class="rcpt-name">${esc(S.name || 'Global Delivery Services')}</div>${contact ? `<div class="rcpt-small">${contact}</div>` : ''}`
+      : '<div class="rcpt-name">PAYMENT RECEIPT</div>'}
     <div class="rcpt-rule"></div>
     <div class="rcpt-row"><span>Receipt No:</span><b>${esc(r.receipt_no)}</b></div>
     <div class="rcpt-row"><span>Date:</span><b>${when(r.created_at)}</b></div>
