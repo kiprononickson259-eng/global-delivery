@@ -38,6 +38,13 @@
     .parcel { padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; font-size: .92rem; }
     .parcel:last-child { border: 0; }
     .hidden { display: none; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 8px 0; }
+    .stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px; text-align: center; }
+    .stat b { display: block; font-size: 1.5rem; color: var(--brand); }
+    .stat span { font-size: .85rem; color: #667; }
+    .rep-line { display: flex; justify-content: space-between; padding: 3px 0; font-size: .92rem; border-bottom: 1px solid var(--line); }
+    .rep-total { display: flex; justify-content: space-between; font-size: 1.1rem; margin-top: 8px; }
+    textarea { resize: vertical; }
     .del { width: auto; background: #c62828; padding: 4px 12px; font-size: .8rem; margin-top: 6px; }
     h3 { margin: 16px 0 4px; }
     .login-box { max-width: 380px; margin: 40px auto; }
@@ -91,6 +98,17 @@
         <div id="updated"></div>
       </div>
 
+      <h3>Update many parcels at once</h3>
+      <div class="card">
+        <textarea id="bcodes" rows="4" placeholder="Tracking numbers, one per line (scan or paste them)"></textarea>
+        <select id="bstatus"></select>
+        <input id="blocation" placeholder="Location (e.g. Nairobi hub)" />
+        <input id="btransport" placeholder="Flight or vehicle used (e.g. Flight KQ 100 or Truck KDA 123X)" />
+        <input id="bnote" placeholder="Note (optional)" />
+        <button onclick="batchUpdate()">Update all</button>
+        <div id="batchmsg"></div>
+      </div>
+
       <h3>Payment receipt</h3>
       <div class="card">
         <input id="pcode" placeholder="Tracking number" onchange="loadReceipts()" />
@@ -126,6 +144,21 @@
         <div id="receiptView"></div>
       </div>
 
+      <div id="editCard" class="hidden">
+        <h3>Edit parcel <span id="etitle"></span></h3>
+        <div class="card">
+          <input id="ecode" type="hidden" />
+          <div class="row"><input id="esname" placeholder="Sender name" /><input id="esphone" placeholder="Sender phone" /></div>
+          <div class="row"><input id="ername" placeholder="Receiver name" /><input id="erphone" placeholder="Receiver phone" /></div>
+          <div class="row"><input id="eorigin" placeholder="From (town)" /><input id="edest" placeholder="To (town)" /></div>
+          <input id="edesc" placeholder="Contents (e.g. Documents, clothes)" />
+          <input id="eweight" type="number" step="0.1" placeholder="Weight in kg" />
+          <button onclick="saveEdit()">Save changes</button>
+          <button style="background:#555" onclick="cancelEdit()">Close</button>
+          <div id="editMsg"></div>
+        </div>
+      </div>
+
       <h3>Recent parcels</h3>
       <div class="card">
         <input id="search" placeholder="Search by number or name" oninput="loadParcels()" />
@@ -141,6 +174,19 @@
       </div>
 
       <div id="adminOnly" class="hidden">
+        <h3>Reports and export</h3>
+        <div class="card">
+          <select id="rrange" onchange="loadReport()">
+            <option value="today" selected>Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option>
+            <option value="month">This month</option><option value="custom">Custom dates</option>
+          </select>
+          <div class="row"><input id="rfrom" type="date" onchange="$('rrange').value='custom'; loadReport()" /><input id="rto" type="date" onchange="$('rrange').value='custom'; loadReport()" /></div>
+          <div id="report"></div>
+          <p><b>Download for Excel</b> <small>(parcels and receipts use the period chosen above)</small></p>
+          <button onclick="downloadCsv('parcels')">Parcels</button>
+          <button onclick="downloadCsv('receipts')">Receipts</button>
+          <button style="background:#555" onclick="downloadCsv('activity')">Activity log (everything)</button>
+        </div>
         <h3>Staff accounts</h3>
         <div class="card">
           <input id="nusername" placeholder="Username (e.g. mary)" />
@@ -249,9 +295,10 @@ async function showPanel() {
   if (!$('pservedby').value) $('pservedby').value = me.full_name || me.username;
   const statuses = await (await fetch('/api/statuses')).json();
   $('status').innerHTML = statuses.map(s => `<option>${esc(s)}</option>`).join('');
+  $('bstatus').innerHTML = $('status').innerHTML;
   $('adminOnly').classList.toggle('hidden', me.role !== 'admin');
   await loadParcels();
-  if (me.role === 'admin') { loadUsers(); loadActivity(); }
+  if (me.role === 'admin') { loadUsers(); loadActivity(); loadReport(); }
 }
 
 async function unlock() {
@@ -360,9 +407,130 @@ function renderList(rows) {
       ${esc(p.origin)} → ${esc(p.destination)}<br>
       <small>To: ${esc(p.receiver_name)} ${esc(p.receiver_phone)}${p.created_by ? ' · registered by ' + esc(p.created_by) : ''}</small><br>
       ${p.can_edit ? `<button class="del" style="background:var(--brand)" onclick="event.stopPropagation(); showLabel('${esc(p.tracking_number)}')">Label</button>
-        <button class="del" style="background:#2e7d32" onclick="event.stopPropagation(); pickReceipt('${esc(p.tracking_number)}')">Receipt</button>` : '<small>View only (registered by someone else)</small>'}
+        <button class="del" style="background:#2e7d32" onclick="event.stopPropagation(); pickReceipt('${esc(p.tracking_number)}')">Receipt</button>
+        <button class="del" style="background:#555" onclick="event.stopPropagation(); startEdit('${esc(p.tracking_number)}')">Edit</button>` : '<small>View only (registered by someone else)</small>'}
       ${me && me.role === 'admin' ? `<button class="del" onclick="event.stopPropagation(); removeParcel('${esc(p.tracking_number)}')">Delete</button>` : ''}
     </div>`).join('') : '<small>No parcels yet</small>';
+}
+
+/* ---------- Edit a parcel ---------- */
+async function startEdit(code) {
+  const r = await api('GET', '/api/parcels/' + encodeURIComponent(code));
+  if (!r.ok) { alert(r.data.error); return; }
+  const p = r.data;
+  $('ecode').value = p.tracking_number;
+  $('etitle').textContent = p.tracking_number;
+  $('esname').value = p.sender_name || '';
+  $('esphone').value = p.sender_phone || '';
+  $('ername').value = p.receiver_name || '';
+  $('erphone').value = p.receiver_phone || '';
+  $('eorigin').value = p.origin || '';
+  $('edest').value = p.destination || '';
+  $('edesc').value = p.description || '';
+  $('eweight').value = p.weight_kg == null ? '' : p.weight_kg;
+  $('editMsg').innerHTML = '';
+  $('editCard').classList.remove('hidden');
+  $('editCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cancelEdit() { $('editCard').classList.add('hidden'); }
+
+async function saveEdit() {
+  const r = await api('PATCH', '/api/parcels/' + encodeURIComponent($('ecode').value), {
+    sender_name: $('esname').value, sender_phone: $('esphone').value,
+    receiver_name: $('ername').value, receiver_phone: $('erphone').value,
+    origin: $('eorigin').value, destination: $('edest').value,
+    description: $('edesc').value, weight_kg: $('eweight').value
+  });
+  if (!r.ok) { $('editMsg').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  $('editMsg').innerHTML = r.data.changed.length ? '<p class="ok">Saved.</p>' : '<p>Nothing was changed.</p>';
+  loadParcels();
+}
+
+/* ---------- Update many parcels at once ---------- */
+async function batchUpdate() {
+  const codes = $('bcodes').value.split(/[\s,;]+/).map(extractCode).filter(Boolean);
+  if (!codes.length) { $('batchmsg').innerHTML = '<p class="error">Enter at least one tracking number</p>'; return; }
+  const r = await api('POST', '/api/batch-events', {
+    codes, status: $('bstatus').value, location: $('blocation').value, transport: $('btransport').value, note: $('bnote').value
+  });
+  if (!r.ok) { $('batchmsg').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  let html = `<p class="ok">Updated ${r.data.updated} parcel${r.data.updated === 1 ? '' : 's'}.</p>`;
+  if (r.data.skipped.length) {
+    html += `<p class="error">Skipped ${r.data.skipped.length}:</p>`
+      + r.data.skipped.map(s => `<div><small><b>${esc(s.code)}</b>: ${esc(s.error)}</small></div>`).join('');
+  }
+  $('batchmsg').innerHTML = html;
+  if (r.data.updated) { $('bcodes').value = ''; loadParcels(); }
+}
+
+/* ---------- Reports and Excel export (admin) ---------- */
+const utcStamp = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+
+// Works out the chosen period in YOUR time zone, and sends it to the server as UTC times
+function reportPeriod() {
+  const v = $('rrange').value;
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const next = (d) => { const n = new Date(d); n.setDate(n.getDate() + 1); return n; };
+  const today = day(new Date());
+  let a, b, label;
+  if (v === 'custom') {
+    const f = $('rfrom').value, t = $('rto').value;
+    if (!f || !t) return null;
+    const [fy, fm, fd] = f.split('-').map(Number), [ty, tm, td] = t.split('-').map(Number);
+    a = new Date(fy, fm - 1, fd); b = next(new Date(ty, tm - 1, td)); label = f + ' to ' + t;
+  } else if (v === 'today') { a = today; b = next(today); label = 'Today'; }
+  else if (v === 'month') { a = new Date(today.getFullYear(), today.getMonth(), 1); b = next(today); label = 'This month'; }
+  else { const n = Number(v); a = new Date(today); a.setDate(a.getDate() - (n - 1)); b = next(today); label = 'Last ' + n + ' days'; }
+  if (!(a < b)) return null;
+  return { from: utcStamp(a), to: utcStamp(b), label };
+}
+
+async function loadReport() {
+  const p = reportPeriod();
+  if (!p) { $('report').innerHTML = '<small>Choose both dates.</small>'; return; }
+  const r = await api('GET', '/api/reports?from=' + encodeURIComponent(p.from) + '&to=' + encodeURIComponent(p.to));
+  if (!r.ok) { $('report').innerHTML = `<p class="error">${esc(r.data.error)}</p>`; return; }
+  const d = r.data;
+  const count = (status) => (d.updates.find(u => u.status === status) || {}).n || 0;
+  const list = (rows, empty) => rows.length
+    ? rows.map(x => `<div class="rep-line"><span>${esc(x.status)}</span><b>${x.n}</b></div>`).join('')
+    : `<small>${empty}</small>`;
+  $('report').innerHTML = `
+    <p><small>${esc(p.label)}</small></p>
+    <div class="stats">
+      <div class="stat"><b>${d.registered}</b><span>Registered</span></div>
+      <div class="stat"><b>${count('Delivered')}</b><span>Delivered</span></div>
+      <div class="stat"><b>${count('Cancelled')}</b><span>Cancelled</span></div>
+      <div class="stat"><b>${d.without_receipt}</b><span>Without a receipt</span></div>
+    </div>
+    <p><b>Money received</b></p>
+    ${d.totals.length ? d.totals.map(t => `
+      <div class="rep-total"><span>${esc(t.currency)} · ${t.n} receipt${t.n === 1 ? '' : 's'}</span><b>${money(t.total)}</b></div>
+      <small>Before tax ${money(t.subtotal)} · tax ${money(t.tax)}</small>
+      ${d.money.filter(m => m.currency === t.currency).map(m => `<div class="rep-line"><span>${esc(m.method)} (${m.n})</span><b>${money(m.total)}</b></div>`).join('')}`).join('')
+      : '<small>No receipts in this period.</small>'}
+    <p><b>Status updates in this period</b></p>${list(d.updates, 'None')}
+    <p><b>All parcels by current status</b></p>${list(d.parcels_now, 'No parcels yet')}`;
+}
+
+async function downloadCsv(kind) {
+  let qs = '';
+  if (kind !== 'activity') {
+    const p = reportPeriod();
+    if (p) qs = '?from=' + encodeURIComponent(p.from) + '&to=' + encodeURIComponent(p.to);
+  }
+  const res = await fetch('/api/export/' + kind + '.csv' + qs, { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) { alert('Could not export. Refresh the page (Ctrl + F5) and try again.'); return; }
+  const text = await res.text();
+  const blob = new Blob(['\uFEFF', text], { type: 'text/csv;charset=utf-8' });   // the first character makes Excel read accents correctly
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = kind + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 /* ---------- Payment receipts ---------- */
