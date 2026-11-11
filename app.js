@@ -291,24 +291,192 @@ app.post('/api/parcels', auth, wrap(async (req, res) => {
   res.status(201).json({ tracking_number: code });
 }));
 
-app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
-  const code = req.params.code.trim().toUpperCase();
-  const parcel = await db.get('SELECT id, created_by, status FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(req.user), [code]);
-  if (!parcel) return res.status(404).json({ error: 'Tracking number not found' });
-  if (!canEdit(req.user, parcel)) return res.status(403).json({ error: NOT_YOURS });
+const limitText = (v, max) => String(v ?? '').trim().slice(0, max);
+
+// One status update. Same rules for one parcel or many: returns { ok: true } or { status, error }.
+async function applyEvent(user, rawCode, data) {
+  const code = String(rawCode || '').trim().toUpperCase();
+  const parcel = await db.get('SELECT id, created_by, status FROM parcels WHERE tracking_number = ?' + hiddenFromStaff(user), [code]);
+  if (!parcel) return { status: 404, error: 'Tracking number not found' };
+  if (!canEdit(user, parcel)) return { status: 403, error: NOT_YOURS };
   // A cancelled parcel can only be changed again by an admin
-  if (parcel.status === 'Cancelled' && req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'This parcel is cancelled. Only an admin can change it.' });
+  if (parcel.status === 'Cancelled' && user.role !== 'admin') {
+    return { status: 403, error: 'This parcel is cancelled. Only an admin can change it.' };
   }
-  const { status, location, note } = req.body;
-  const transport = String(req.body.transport || '').trim().slice(0, 120) || null;
-  if (!STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status' });
   await db.run('INSERT INTO events (parcel_id, status, location, transport, note, created_by) VALUES (?,?,?,?,?,?)',
-    [parcel.id, status, location || null, transport, note || null, req.user.username]);
-  await db.run('UPDATE parcels SET status = ? WHERE id = ?', [status, parcel.id]);
-  await log(req.user.username, 'Updated parcel', `${code}: ${status}`);
+    [parcel.id, data.status, data.location || null, data.transport || null, data.note || null, user.username]);
+  await db.run('UPDATE parcels SET status = ? WHERE id = ?', [data.status, parcel.id]);
+  return { ok: true, code };
+}
+
+const eventData = (b) => ({
+  status: b.status, location: limitText(b.location, 120), transport: limitText(b.transport, 120), note: limitText(b.note, 300)
+});
+
+app.post('/api/parcels/:code/events', auth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!STATUSES.includes(b.status)) return res.status(400).json({ error: 'Invalid status' });
+  const r = await applyEvent(req.user, req.params.code, eventData(b));
+  if (!r.ok) return res.status(r.status).json({ error: r.error });
+  await log(req.user.username, 'Updated parcel', `${r.code}: ${b.status}`);
   res.status(201).json({ ok: true });
 }));
+
+// Update MANY parcels at once (for example everything on one flight or truck)
+app.post('/api/batch-events', auth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!STATUSES.includes(b.status)) return res.status(400).json({ error: 'Choose a status' });
+  const codes = [...new Set((Array.isArray(b.codes) ? b.codes : []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean))];
+  if (!codes.length) return res.status(400).json({ error: 'Enter at least one tracking number' });
+  if (codes.length > 200) return res.status(400).json({ error: 'You can update up to 200 parcels at once' });
+  const data = eventData(b);
+  const updated = [], skipped = [];
+  for (const code of codes) {
+    const r = await applyEvent(req.user, code, data);
+    if (r.ok) updated.push(code); else skipped.push({ code, error: r.error });
+  }
+  if (updated.length) {
+    await log(req.user.username, 'Updated many parcels',
+      `${updated.length} set to ${b.status}: ${updated.slice(0, 5).join(', ')}${updated.length > 5 ? ' ...' : ''}`);
+  }
+  res.json({ updated: updated.length, skipped });
+}));
+
+// Full details of one parcel, for the edit form
+const PARCEL_COLUMNS = 'id, tracking_number, sender_name, sender_phone, receiver_name, receiver_phone, origin, destination, description, weight_kg, status, created_by';
+app.get('/api/parcels/:code', auth, wrap(async (req, res) => {
+  const p = await db.get(`SELECT ${PARCEL_COLUMNS} FROM parcels WHERE tracking_number = ?` + hiddenFromStaff(req.user),
+    [req.params.code.trim().toUpperCase()]);
+  if (!p) return res.status(404).json({ error: 'Tracking number not found' });
+  if (!canEdit(req.user, p)) return res.status(403).json({ error: NOT_YOURS });
+  delete p.id;
+  res.json(p);
+}));
+
+// Correct a parcel's details (the tracking number and status are not changed here)
+const FIELD_NAMES = { sender_name: 'Sender name', receiver_name: 'Receiver name', origin: 'From (town)', destination: 'To (town)' };
+app.patch('/api/parcels/:code', auth, wrap(async (req, res) => {
+  const p = await db.get(`SELECT ${PARCEL_COLUMNS} FROM parcels WHERE tracking_number = ?` + hiddenFromStaff(req.user),
+    [req.params.code.trim().toUpperCase()]);
+  if (!p) return res.status(404).json({ error: 'Tracking number not found' });
+  if (!canEdit(req.user, p)) return res.status(403).json({ error: NOT_YOURS });
+  if (p.status === 'Cancelled' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'This parcel is cancelled. Only an admin can change it.' });
+  }
+  const b = req.body || {};
+  const next = { ...p };
+  const changed = [];
+  const set = (field, value) => {
+    if (String(p[field] ?? '') !== String(value ?? '')) { next[field] = value; changed.push(field); }
+  };
+  for (const f of Object.keys(FIELD_NAMES)) {
+    if (b[f] === undefined) continue;
+    const v = limitText(b[f], 120);
+    if (!v) return res.status(400).json({ error: `${FIELD_NAMES[f]} cannot be empty` });
+    set(f, v);
+  }
+  for (const f of ['sender_phone', 'receiver_phone']) if (b[f] !== undefined) set(f, limitText(b[f], 40) || null);
+  if (b.description !== undefined) set('description', limitText(b.description, 300) || null);
+  if (b.weight_kg !== undefined) {
+    const w = b.weight_kg === '' || b.weight_kg === null ? null : Number(b.weight_kg);
+    if (w !== null && (!Number.isFinite(w) || w < 0)) return res.status(400).json({ error: 'Weight must be a positive number' });
+    set('weight_kg', w);
+  }
+  if (!changed.length) return res.json({ ok: true, changed: [] });
+  await db.run(
+    'UPDATE parcels SET sender_name = ?, sender_phone = ?, receiver_name = ?, receiver_phone = ?, origin = ?, destination = ?, description = ?, weight_kg = ? WHERE id = ?',
+    [next.sender_name, next.sender_phone, next.receiver_name, next.receiver_phone, next.origin, next.destination, next.description, next.weight_kg, p.id]);
+  await log(req.user.username, 'Edited parcel', `${p.tracking_number}: ${changed.join(', ')}`);
+  res.json({ ok: true, changed });
+}));
+
+/* ---------- Reports and Excel (CSV) export: admin only ---------- */
+const TS = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const stamp = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+// The page sends the start and end of the period as UTC times (it works out "today" in your own time zone)
+function periodFrom(req, allTimeByDefault) {
+  const from = String(req.query.from || ''), to = String(req.query.to || '');
+  if (TS.test(from) && TS.test(to) && from < to) return { from, to };
+  if (allTimeByDefault) return { from: '0000-01-01 00:00:00', to: '9999-12-31 23:59:59' };
+  const now = new Date();
+  return { from: stamp(new Date(now.getTime() - 30 * 86400000)), to: stamp(new Date(now.getTime() + 60000)) };
+}
+const num = (v) => Number(v) || 0;
+
+app.get('/api/reports', auth, adminOnly, wrap(async (req, res) => {
+  const { from, to } = periodFrom(req, false);
+  const registered = await db.get('SELECT COUNT(*) AS n FROM parcels WHERE created_at >= ? AND created_at < ?', [from, to]);
+  const noReceipt = await db.get(
+    `SELECT COUNT(*) AS n FROM parcels WHERE created_at >= ? AND created_at < ? AND status <> 'Cancelled'
+       AND NOT EXISTS (SELECT 1 FROM payments pm WHERE pm.parcel_id = parcels.id AND pm.voided = 0)`, [from, to]);
+  const updates = await db.all('SELECT status, COUNT(*) AS n FROM events WHERE created_at >= ? AND created_at < ? GROUP BY status ORDER BY n DESC', [from, to]);
+  const now = await db.all('SELECT status, COUNT(*) AS n FROM parcels GROUP BY status ORDER BY n DESC');
+  const money = await db.all(
+    `SELECT currency, method, COUNT(*) AS n, SUM(subtotal_cents) AS subtotal, SUM(tax_cents) AS tax, SUM(total_cents) AS total
+       FROM payments WHERE voided = 0 AND created_at >= ? AND created_at < ?
+       GROUP BY currency, method ORDER BY currency, method`, [from, to]);
+  const rows = money.map(m => ({ currency: m.currency, method: m.method, n: num(m.n), subtotal: num(m.subtotal), tax: num(m.tax), total: num(m.total) }));
+  const totals = {};
+  for (const m of rows) {
+    const t = totals[m.currency] || (totals[m.currency] = { currency: m.currency, n: 0, subtotal: 0, tax: 0, total: 0 });
+    t.n += m.n; t.subtotal += m.subtotal; t.tax += m.tax; t.total += m.total;
+  }
+  res.json({
+    registered: num(registered && registered.n),
+    without_receipt: num(noReceipt && noReceipt.n),
+    updates: updates.map(u => ({ status: u.status, n: num(u.n) })),
+    parcels_now: now.map(u => ({ status: u.status, n: num(u.n) })),
+    money: rows,
+    totals: Object.values(totals)
+  });
+}));
+
+// CSV opens directly in Excel
+class Raw { constructor(s) { this.s = s; } }
+const asText = (v) => (v ? new Raw(`="${String(v).replace(/"/g, '""')}"`) : '');   // keeps phone numbers exactly as typed in Excel
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  let t = v instanceof Raw ? v.s : String(v);
+  if (!(v instanceof Raw) && (/^[=@\t\r]/.test(t) || (/^[+-]/.test(t) && !/^[+-]?[\d\s()-]+$/.test(t)))) t = "'" + t;   // stops spreadsheet formulas
+  return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+const toCsv = (head, rows) => [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+const money2 = (c) => (num(c) / 100).toFixed(2);
+function sendCsv(res, name, body) {
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` });
+  res.send(body);
+}
+
+app.get('/api/export/parcels.csv', auth, adminOnly, wrap(async (req, res) => {
+  const { from, to } = periodFrom(req, true);
+  const rows = await db.all(
+    `SELECT tracking_number, status, sender_name, sender_phone, receiver_name, receiver_phone, origin, destination, description, weight_kg, created_by, created_at,
+            CASE WHEN EXISTS (SELECT 1 FROM payments pm WHERE pm.parcel_id = parcels.id AND pm.voided = 0) THEN 'Yes' ELSE 'No' END AS paid
+       FROM parcels WHERE created_at >= ? AND created_at < ? ORDER BY id DESC LIMIT 50000`, [from, to]);
+  sendCsv(res, 'parcels.csv', toCsv(
+    ['Tracking number', 'Status', 'Sender', 'Sender phone', 'Receiver', 'Receiver phone', 'From', 'To', 'Contents', 'Weight (kg)', 'Registered by', 'Registered (UTC)', 'Has receipt'],
+    rows.map(r => [r.tracking_number, r.status, r.sender_name, asText(r.sender_phone), r.receiver_name, asText(r.receiver_phone), r.origin, r.destination, r.description, r.weight_kg, r.created_by, r.created_at, r.paid])));
+}));
+
+app.get('/api/export/receipts.csv', auth, adminOnly, wrap(async (req, res) => {
+  const { from, to } = periodFrom(req, true);
+  const rows = await db.all(
+    `SELECT pm.id, pm.created_at, p.tracking_number, pm.item, pm.qty, pm.unit_cents, pm.subtotal_cents, pm.tax_rate, pm.tax_cents, pm.total_cents,
+            pm.currency, pm.method, pm.paid_by, pm.served_by, pm.created_by, pm.voided
+       FROM payments pm JOIN parcels p ON p.id = pm.parcel_id
+      WHERE pm.created_at >= ? AND pm.created_at < ? ORDER BY pm.id DESC LIMIT 50000`, [from, to]);
+  sendCsv(res, 'receipts.csv', toCsv(
+    ['Receipt no', 'Date (UTC)', 'Tracking number', 'Item', 'Qty', 'Unit price', 'Subtotal', 'Tax %', 'Tax', 'Total', 'Currency', 'Paid by', 'Received from', 'Served by', 'Issued by', 'Void'],
+    rows.map(r => [receiptNo(r.id), r.created_at, r.tracking_number, r.item, r.qty, money2(r.unit_cents), money2(r.subtotal_cents), r.tax_rate, money2(r.tax_cents), money2(r.total_cents),
+      r.currency, r.method, r.paid_by, r.served_by || r.created_by, r.created_by, Number(r.voided) === 1 ? 'VOID' : ''])));
+}));
+
+app.get('/api/export/activity.csv', auth, adminOnly, wrap(async (req, res) => {
+  const rows = await db.all('SELECT created_at, username, action, detail FROM activity_log ORDER BY id DESC LIMIT 50000');
+  sendCsv(res, 'activity-log.csv', toCsv(['Time (UTC)', 'User', 'Action', 'Details'], rows.map(r => [r.created_at, r.username, r.action, r.detail])));
+}));
+
+
 
 app.get('/api/parcels', auth, wrap(async (req, res) => {
   const q = `%${(req.query.q || '').trim()}%`;
